@@ -387,6 +387,90 @@ func TestSwapLineHiddenWhenNoSwapConfigured(t *testing.T) {
 	}
 }
 
+// TestRebootRequiresConfirmation is the important one: R must never reach a
+// machine on its own. It is the only action in hmon that changes a host rather
+// than reading it.
+func TestRebootRequiresConfirmation(t *testing.T) {
+	m, _ := testModel(t)
+	m.selected = "beta"
+
+	next, cmd := m.Update(key("R"))
+	m = next.(Model)
+	if cmd != nil {
+		t.Fatal("R issued a command before confirmation — must only open the dialog")
+	}
+	if m.confirmReboot != "beta" {
+		t.Errorf("confirmReboot = %q, want beta", m.confirmReboot)
+	}
+
+	// The dialog must name the host and show the exact command.
+	out := m.View()
+	for _, want := range []string{"Reboot beta?", "systemctl reboot", "y", "cancel"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("confirm dialog missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestRebootConfirmedOnlyByY(t *testing.T) {
+	m, _ := testModel(t)
+
+	// Anything other than y cancels, so mashing cannot confirm.
+	for _, k := range []string{"n", "N", "esc", "enter", "q", "r", "R", " "} {
+		mm := m
+		mm.confirmReboot = "alpha"
+		next, cmd := mm.Update(key(k))
+		got := next.(Model)
+		if cmd != nil {
+			t.Errorf("key %q issued a command, want cancel", k)
+		}
+		if got.confirmReboot != "" {
+			t.Errorf("key %q left the dialog open", k)
+		}
+	}
+
+	m.confirmReboot = "alpha"
+	next, cmd := m.Update(key("y"))
+	got := next.(Model)
+	if cmd == nil {
+		t.Error("y did not issue the reboot command")
+	}
+	if got.confirmReboot != "" {
+		t.Error("dialog still open after confirming")
+	}
+}
+
+// TestConfirmDialogSwallowsOtherBindings guards against a stray keypress doing
+// something else entirely while the dialog is up — quitting, re-sorting, or
+// opening an ssh session behind the prompt.
+func TestConfirmDialogSwallowsOtherBindings(t *testing.T) {
+	m, _ := testModel(t)
+	m.confirmReboot = "alpha"
+	m.sort = sortName
+
+	next, _ := m.Update(key("s"))
+	got := next.(Model)
+	if got.sort != sortName {
+		t.Error("sort changed while the confirm dialog was showing")
+	}
+	if got.quitting {
+		t.Error("model quit while the confirm dialog was showing")
+	}
+}
+
+func TestConfirmDialogWarnsWhenHostIsNotUp(t *testing.T) {
+	// Rebooting something already unreachable cannot work, and usually means
+	// the wrong row is selected.
+	m, fleet := testModel(t)
+	fleet.Fail("alpha", model.FailUnreachable, "timeout")
+	fleet.Fail("alpha", model.FailUnreachable, "timeout")
+
+	m.confirmReboot = "alpha"
+	if out := m.View(); !strings.Contains(out, "currently down") {
+		t.Errorf("dialog does not warn that the host is down\n---\n%s", out)
+	}
+}
+
 func TestSSHKeyLaunchesSessionForSelectedHost(t *testing.T) {
 	m, _ := testModel(t)
 	m.selected = "beta"

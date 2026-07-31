@@ -100,6 +100,12 @@ type Model struct {
 	sortDesc bool
 	procSort procSort
 
+	// confirmReboot holds the host awaiting reboot confirmation, empty when no
+	// dialog is showing. Rebooting is the only thing hmon does that changes a
+	// machine rather than reading it, so it never happens on a single
+	// keystroke.
+	confirmReboot string
+
 	width, height int
 	now           time.Time
 
@@ -210,6 +216,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// While a reboot is pending confirmation the dialog owns the keyboard, so
+	// no normal binding can fire underneath it.
+	if m.confirmReboot != "" {
+		return m.handleConfirmKey(msg)
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		m.quitting = true
@@ -271,6 +283,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "R":
+		// Only opens the dialog. Nothing reaches the machine until confirmed.
+		if _, ok := m.fleet.Get(m.selected); ok {
+			m.confirmReboot = m.selected
+		}
+		return m, nil
+
 	case "c":
 		if m.showingProcs() {
 			m.procSort = procByCPU
@@ -284,6 +303,34 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// handleConfirmKey resolves the reboot dialog. Only "y" proceeds; every other
+// key cancels, so there is no way to confirm by mashing.
+func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	host := m.confirmReboot
+	m.confirmReboot = ""
+
+	if msg.String() != "y" {
+		return m, nil
+	}
+
+	h, ok := m.fleet.Get(host)
+	if !ok {
+		return m, nil
+	}
+
+	// Run interactively rather than in the background. The SSH user needs
+	// sudo, and a backgrounded BatchMode call would fail invisibly on a
+	// password prompt; this way sudo can ask, and any error is printed on the
+	// terminal the user is already looking at.
+	//
+	// A non-zero exit is the normal case: the connection drops as the machine
+	// goes down, so ssh reports failure for a reboot that worked.
+	return m, tea.ExecProcess(
+		exec.Command("ssh", "-t", h.Addr, "sudo", "systemctl", "reboot"),
+		func(error) tea.Msg { return resumedMsg{} },
+	)
 }
 
 // move shifts the selection by delta within the current sort order, clamping
@@ -377,6 +424,12 @@ func maxTemp(h *model.Host) float64 {
 func (m Model) View() string {
 	if m.quitting {
 		return ""
+	}
+	// The confirmation takes over the screen rather than overlaying the table.
+	// Rebooting a machine should not look like an incidental prompt tucked
+	// into a corner.
+	if m.confirmReboot != "" {
+		return m.renderConfirm()
 	}
 	if m.view == viewDetail {
 		return m.renderDetail()

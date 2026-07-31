@@ -69,6 +69,7 @@ no alerting.
 | `s` / `i` | Cycle sort column / invert |
 | `c` / `m` | Sort processes by CPU / memory |
 | `S` | Open an interactive ssh session on the selected host |
+| `R` | Reboot the selected host (asks first) |
 | `r` / `q` | Refresh / quit |
 
 The layout is responsive. On a tall terminal the space below the table shows
@@ -82,6 +83,15 @@ twice and diffed, rather than `ps`'s lifetime average.
 
 `S` hands the terminal to `ssh` for the selected host and takes it back when
 you exit, refreshing on return.
+
+`R` reboots the selected host. It is the only thing hmon does that changes a
+machine rather than reading one, so it never happens on a single keystroke: a
+full-screen prompt names the host, spells out the exact command, and warns if
+the host is already unreachable. Only `y` proceeds — every other key cancels.
+
+The reboot runs as `ssh -t <host> sudo systemctl reboot`, interactively, so
+`sudo` can prompt for a password. Running it in the background would fail
+silently on any host without passwordless sudo.
 
 ## Health
 

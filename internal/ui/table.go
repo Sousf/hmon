@@ -83,7 +83,7 @@ func (m Model) renderTable() string {
 
 	b.WriteString("\n")
 	b.WriteString(styleHelp.Render(fmt.Sprintf(
-		"↑↓ move · enter detail · S ssh · s sort (%s%s) · i invert · r refresh · q quit",
+		"↑↓ move · enter detail · S ssh · R reboot · s sort (%s%s) · i invert · r refresh · q quit",
 		m.sort, arrow(m.sortDesc))))
 	return b.String()
 }
