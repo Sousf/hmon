@@ -11,7 +11,218 @@ import (
 const (
 	detailSparkW = 24
 	detailBarW   = 20
+
+	// minSplitLines is the smallest detail pane worth drawing. Below this it
+	// would show a header and little else, so the table simply keeps the space.
+	minSplitLines = 8
+
+	paneSparkW = 16
+	paneBarW   = 14
 )
+
+// splitActive reports whether the terminal is tall enough to show live detail
+// beneath the table. Height is zero until the first WindowSizeMsg arrives, so
+// this is false for the first frame and the layout starts compact.
+func (m Model) splitActive() bool {
+	return m.view == viewTable && m.height > 0 &&
+		m.height-(3+len(m.fleet.Hosts))-3 >= minSplitLines
+}
+
+// detailPane renders live detail for one host into at most budget lines.
+//
+// The fixed sections are laid out first and whatever remains goes to the
+// process list, so a taller terminal shows more processes rather than the pane
+// overflowing and pushing the help line off screen.
+func (m Model) detailPane(h *model.Host, budget int) []string {
+	if budget <= 0 {
+		return nil
+	}
+
+	head := []string{
+		"  " + styleTitle.Render(h.Name) + "  " + statusCell(h) +
+			paneUptime(h),
+	}
+
+	if !h.Status.Live() {
+		if h.LastErr != "" {
+			head = append(head, "  "+styleCrit.Render(truncate(h.LastErr, maxInt(20, m.width-4))))
+		}
+		if !h.LastSeen.IsZero() {
+			head = append(head, "  "+styleDim.Render("last seen "+h.LastSeen.Format("15:04:05")))
+		}
+		return clampLines(head, budget)
+	}
+
+	head = append(head, "")
+	head = append(head, "  "+m.paneCPULine(h))
+	head = append(head, "  "+m.paneMemLine(h))
+
+	if len(h.Cur.FS) > 0 {
+		head = append(head, "")
+		for _, fs := range h.Cur.FS {
+			head = append(head, "  "+m.paneFSLine(fs))
+		}
+	}
+
+	if net := m.paneNetLine(h); net != "" {
+		head = append(head, "")
+		head = append(head, "  "+net)
+	}
+
+	if temps := m.paneTempLine(h); temps != "" {
+		head = append(head, "  "+temps)
+	}
+
+	// Everything above is fixed; the process list absorbs the slack. Two lines
+	// are reserved for its blank separator and column header.
+	remaining := budget - len(head) - 2
+	if remaining >= 1 && len(h.Cur.Procs) > 0 {
+		head = append(head, "")
+		head = append(head, "  "+styleHeader.Render(
+			padLeft("PID", 8)+"  "+padLeft("CPU%", 6)+"  "+padLeft("RSS", 8)+"  COMMAND"))
+		head = append(head, m.paneProcLines(h, remaining)...)
+	} else if remaining >= 1 && len(h.Cur.Procs) == 0 {
+		head = append(head, "")
+		head = append(head, "  "+styleDim.Render("collecting processes…"))
+	}
+
+	return clampLines(head, budget)
+}
+
+func paneUptime(h *model.Host) string {
+	if h.Status.Live() && h.Cur.Uptime > 0 {
+		return styleDim.Render("  · up " + humanDuration(h.Cur.Uptime))
+	}
+	return ""
+}
+
+func (m Model) paneCPULine(h *model.Host) string {
+	label := styleHeader.Render(padRight("CPU", 6))
+	load := styleDim.Render(fmt.Sprintf("   LOAD  %.2f  %.2f  %.2f",
+		h.Cur.Load[0], h.Cur.Load[1], h.Cur.Load[2]))
+
+	if !h.HasCPUPct {
+		return label + styleDim.Render(padLeft("—", 6)) + "  " +
+			padRight("", paneSparkW) + load
+	}
+	return label +
+		levelStyle(m.cfg.Thresholds.CPU.Classify(h.CPUPct)).
+			Render(padLeft(fmt.Sprintf("%.1f%%", h.CPUPct), 6)) + "  " +
+		styleDim.Render(sparkline(h.CPUHist.Values(), paneSparkW, 100)) + load
+}
+
+func (m Model) paneMemLine(h *model.Host) string {
+	label := styleHeader.Render(padRight("MEM", 6))
+	if !h.Cur.HasMem {
+		return label + styleDim.Render("n/a")
+	}
+	pct := h.Cur.MemPct()
+	return label +
+		levelStyle(m.cfg.Thresholds.Mem.Classify(pct)).
+			Render(padLeft(fmt.Sprintf("%.0f%%", pct), 6)) + "  " +
+		styleDim.Render(sparkline(h.MemHist.Values(), paneSparkW, 100)) +
+		styleText.Render(fmt.Sprintf("   %s / %s",
+			humanBytes(h.Cur.MemUsed()), humanBytes(h.Cur.MemTotal)))
+}
+
+func (m Model) paneFSLine(fs model.FS) string {
+	pct := fs.UsedPct()
+	st := levelStyle(m.cfg.Thresholds.Disk.Classify(pct))
+	return styleText.Render(padRight(truncate(fs.Mount, 14), 14)) +
+		st.Render(padLeft(fmt.Sprintf("%.0f%%", pct), 5)) + "  " +
+		st.Render(bar(pct, paneBarW)) + "  " +
+		styleDim.Render(fmt.Sprintf("%s free of %s", humanKB(fs.AvailKB), humanKB(fs.TotalKB)))
+}
+
+func (m Model) paneNetLine(h *model.Host) string {
+	if !h.HasNet {
+		return ""
+	}
+	parts := make([]string, 0, len(h.NetRates))
+	for _, r := range h.NetRates {
+		parts = append(parts, styleText.Render(r.Name)+" "+
+			styleDim.Render(fmt.Sprintf("↓%s ↑%s", humanRate(r.Rx), humanRate(r.Tx))))
+	}
+	return styleHeader.Render(padRight("NET", 6)) + strings.Join(parts, "   ")
+}
+
+// paneTempLine shows only the hottest few sensors: a machine with a sensor per
+// core reports a dozen or more, which would crowd out the process list.
+func (m Model) paneTempLine(h *model.Host) string {
+	if len(h.Cur.Temps) == 0 {
+		return ""
+	}
+	temps := make([]model.Temp, len(h.Cur.Temps))
+	copy(temps, h.Cur.Temps)
+	sort.SliceStable(temps, func(i, j int) bool { return temps[i].C > temps[j].C })
+	if len(temps) > 3 {
+		temps = temps[:3]
+	}
+
+	parts := make([]string, 0, len(temps))
+	for _, t := range temps {
+		parts = append(parts, styleDim.Render(truncate(t.Label, 12)+" ")+
+			levelStyle(m.cfg.Thresholds.Temp.Classify(t.C)).Render(fmt.Sprintf("%.0f°C", t.C)))
+	}
+	return styleHeader.Render(padRight("TEMP", 6)) + strings.Join(parts, "   ")
+}
+
+func (m Model) paneProcLines(h *model.Host, max int) []string {
+	procs := sortedProcs(h.Cur.Procs, m.procSort)
+	if len(procs) > max {
+		procs = procs[:max]
+	}
+	out := make([]string, 0, len(procs))
+	for _, p := range procs {
+		out = append(out, "  "+
+			styleDim.Render(padLeft(fmt.Sprintf("%d", p.PID), 8))+"  "+
+			levelStyle(m.cfg.Thresholds.CPU.Classify(p.CPUPct)).
+				Render(padLeft(fmt.Sprintf("%.1f", p.CPUPct), 6))+"  "+
+			styleText.Render(padLeft(humanKB(p.RSSKB), 8))+"  "+
+			styleText.Render(truncate(p.Command, maxInt(10, m.width-30))))
+	}
+	return out
+}
+
+// sortedProcs orders by the current process sort. The collector sends the
+// union of both rankings, so switching costs no round trip.
+//
+// Each ordering falls back to the other metric for ties. That matters most on
+// an idle host, where every process reports 0.0% CPU: without the fallback the
+// tie is broken by whatever order the collector emitted, and the list fills
+// with zero-RSS kernel threads instead of the processes actually running.
+func sortedProcs(in []model.Proc, by procSort) []model.Proc {
+	procs := make([]model.Proc, len(in))
+	copy(procs, in)
+	sort.SliceStable(procs, func(i, j int) bool {
+		a, b := procs[i], procs[j]
+		if by == procByMem {
+			if a.RSSKB != b.RSSKB {
+				return a.RSSKB > b.RSSKB
+			}
+			return a.CPUPct > b.CPUPct
+		}
+		if a.CPUPct != b.CPUPct {
+			return a.CPUPct > b.CPUPct
+		}
+		return a.RSSKB > b.RSSKB
+	})
+	return procs
+}
+
+func clampLines(lines []string, budget int) []string {
+	if len(lines) > budget {
+		return lines[:budget]
+	}
+	return lines
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 func (m Model) renderDetail() string {
 	h, ok := m.fleet.Get(m.selected)
@@ -181,16 +392,10 @@ func (m Model) detailProcs(h *model.Host) string {
 		return b.String()
 	}
 
-	procs := make([]model.Proc, len(h.Cur.Procs))
-	copy(procs, h.Cur.Procs)
-	// Sort locally rather than asking the host to re-rank: the collector sends
-	// the union of both rankings precisely so this toggle costs no round trip.
-	sort.SliceStable(procs, func(i, j int) bool {
-		if m.procSort == procByMem {
-			return procs[i].RSSKB > procs[j].RSSKB
-		}
-		return procs[i].CPUPct > procs[j].CPUPct
-	})
+	// Sorted locally rather than asking the host to re-rank: the collector
+	// sends the union of both rankings precisely so this toggle costs no round
+	// trip.
+	procs := sortedProcs(h.Cur.Procs, m.procSort)
 	if len(procs) > 10 {
 		procs = procs[:10]
 	}

@@ -139,10 +139,12 @@ func (m Model) pollAll() tea.Cmd {
 		if m.inFlight[h.Name] {
 			continue
 		}
-		// Processes are only collected for the host being viewed in detail:
-		// they cost an extra ~0.5s sampling window on the remote side, and they
-		// are not shown anywhere else.
-		withProcs := m.view == viewDetail && h.Name == m.selected
+		// Processes are only collected for the host whose detail is actually on
+		// screen — either the full detail view, or the split pane on a tall
+		// terminal. They cost an extra ~0.5s sampling window remotely, so the
+		// rest of the fleet never pays for them.
+		showingDetail := m.view == viewDetail || m.splitActive()
+		withProcs := showingDetail && h.Name == m.selected
 		cmds = append(cmds, m.pollOne(h.Name, h.Addr, withProcs))
 	}
 	return tea.Batch(cmds...)

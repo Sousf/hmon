@@ -306,6 +306,109 @@ func TestRenderTableShowsHostsAndStatus(t *testing.T) {
 	}
 }
 
+func TestSplitActivatesOnlyWhenTallEnough(t *testing.T) {
+	m, _ := testModel(t)
+
+	// Height is zero until the first WindowSizeMsg, so the first frame must
+	// stay compact rather than guessing.
+	if m.splitActive() {
+		t.Error("split active with unknown height, want compact")
+	}
+
+	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 12})
+	if m.splitActive() {
+		t.Error("split active on a short terminal, want compact")
+	}
+
+	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 44})
+	if !m.splitActive() {
+		t.Error("split inactive on a tall terminal, want the detail pane")
+	}
+
+	// The full detail view owns the whole screen; no pane underneath a table
+	// that is not being drawn.
+	m.view = viewDetail
+	if m.splitActive() {
+		t.Error("split active while in full detail view")
+	}
+}
+
+// TestDetailPaneRespectsBudget guards the layout invariant: the pane must
+// never render more lines than it was given, or it pushes the help line off
+// the bottom of the screen.
+func TestDetailPaneRespectsBudget(t *testing.T) {
+	m, fleet := testModel(t)
+	s := Sample(t, 10)
+	s.FS = []model.FS{
+		{Mount: "/", TotalKB: 100, UsedKB: 40, AvailKB: 60},
+		{Mount: "/boot", TotalKB: 100, UsedKB: 10, AvailKB: 90},
+		{Mount: "/mnt/tank", TotalKB: 100, UsedKB: 80, AvailKB: 20},
+	}
+	for i := 0; i < 40; i++ {
+		s.Procs = append(s.Procs, model.Proc{
+			PID: i + 1, CPUPct: float64(i), RSSKB: uint64(i) * 1000, Command: "proc",
+		})
+	}
+	fleet.Apply("alpha", s)
+	h, _ := fleet.Get("alpha")
+
+	for _, budget := range []int{1, 5, 8, 12, 20, 50} {
+		got := m.detailPane(h, budget)
+		if len(got) > budget {
+			t.Errorf("budget %d produced %d lines, want at most %d", budget, len(got), budget)
+		}
+	}
+	if got := m.detailPane(h, 0); got != nil {
+		t.Errorf("zero budget produced %d lines, want none", len(got))
+	}
+}
+
+func TestSplitPaneRequestsProcsForSelectedHostOnly(t *testing.T) {
+	m, _ := testModel(t)
+	fake := &fakePoller{}
+	m.poller = fake
+	// Tall terminal, table view: the pane is showing, so its host needs
+	// processes even though we never pressed enter.
+	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 44})
+	m.poller = fake
+	m.selected = "beta"
+
+	drain(m.pollAll())
+	count := 0
+	for _, withProcs := range fake.calls {
+		if withProcs {
+			count++
+		}
+	}
+	if got, want := count, 1; got != want {
+		t.Errorf("procs requested for %d hosts, want %d (selected host only)", got, want)
+	}
+}
+
+// TestProcSortFallsBackToMemory covers idle hosts, where every process reports
+// 0.0% CPU and the ordering would otherwise be whatever the collector emitted
+// — filling the list with zero-RSS kernel threads.
+func TestProcSortFallsBackToMemory(t *testing.T) {
+	procs := []model.Proc{
+		{PID: 1, CPUPct: 0, RSSKB: 0, Command: "kworker/1:0"},
+		{PID: 2, CPUPct: 0, RSSKB: 109000, Command: "lxd"},
+		{PID: 3, CPUPct: 0, RSSKB: 0, Command: "kworker/2:0"},
+		{PID: 4, CPUPct: 0, RSSKB: 102000, Command: "dockerd"},
+	}
+	got := sortedProcs(procs, procByCPU)
+	if got[0].Command != "lxd" || got[1].Command != "dockerd" {
+		t.Errorf("idle ordering = %s, %s; want lxd, dockerd (largest RSS first)",
+			got[0].Command, got[1].Command)
+	}
+
+	// A process actually using CPU must still outrank a memory-heavy idle one.
+	procs = append(procs, model.Proc{PID: 5, CPUPct: 1.9, RSSKB: 500, Command: "python"})
+	got = sortedProcs(procs, procByCPU)
+	if got[0].Command != "python" {
+		t.Errorf("busy ordering put %s first, want python", got[0].Command)
+	}
+}
+
 // TestSparklineIsBlankWhenIdle guards against an idle fleet drawing eight ▁ in
 // a row, which merges into a solid rule and reads as a table border rather
 // than as data.

@@ -70,9 +70,14 @@ no alerting.
 | `c` / `m` | Sort processes by CPU / memory (detail view) |
 | `r` / `q` | Refresh / quit |
 
-Detail view adds every filesystem, interface, and sensor, plus top processes
-with true instantaneous CPU (sampled from `/proc/<pid>/stat` twice, not `ps`'s
-lifetime average).
+The layout is responsive. On a tall terminal the space below the table shows
+live detail for the selected host — filesystems, interfaces, sensors, and top
+processes — so arrow keys sweep the fleet without pressing anything. On a short
+terminal it stays a compact table, and `enter` opens the full-screen detail
+view.
+
+Process CPU is a true instantaneous measurement, sampled from `/proc/<pid>/stat`
+twice and diffed, rather than `ps`'s lifetime average.
 
 ## Notes
 

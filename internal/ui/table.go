@@ -64,11 +64,42 @@ func (m Model) renderTable() string {
 		b.WriteString("\n")
 	}
 
+	// Lines consumed so far: title, blank, header, one per host.
+	used := 3 + len(hosts)
+
+	// On a tall terminal the table alone leaves most of the screen empty, so
+	// spend the remainder on live detail for the selected host. Budget is
+	// whatever is left after reserving the separator, a blank, and the help
+	// line.
+	if budget := m.height - used - 3; m.splitActive() && budget >= minSplitLines {
+		if h, ok := m.fleet.Get(m.selected); ok {
+			b.WriteString(styleDim.Render(separator(m.width)))
+			b.WriteString("\n")
+			for _, line := range m.detailPane(h, budget) {
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		}
+	}
+
 	b.WriteString("\n")
 	b.WriteString(styleHelp.Render(fmt.Sprintf(
-		"↑↓ move · enter detail · s sort (%s%s) · i invert · r refresh · q quit",
+		"↑↓ move · enter full detail · s sort (%s%s) · i invert · r refresh · q quit",
 		m.sort, arrow(m.sortDesc))))
 	return b.String()
+}
+
+// separator draws the rule between the table and the detail pane, capped so it
+// does not stretch absurdly wide on a very large terminal.
+func separator(width int) string {
+	w := width - 2
+	if w > 100 {
+		w = 100
+	}
+	if w < 10 {
+		w = 10
+	}
+	return " " + strings.Repeat("─", w)
 }
 
 func arrow(desc bool) string {
