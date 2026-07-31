@@ -24,12 +24,12 @@ shell script piped to each host's `sh` over stdin on every poll, reading only
 ## Install
 
 ```sh
-brew install Sousf/tap/hmon          # macOS
-go install github.com/Sousf/hmon/cmd/hmon@latest   # anywhere
+brew install Sousf/tap/hmon                        # macOS and Linux
+go install github.com/Sousf/hmon/cmd/hmon@latest   # any Go toolchain
 ```
 
-Casks are macOS-only, so on Linux use `go install` or a
-[release](https://github.com/Sousf/hmon/releases) tarball.
+Prebuilt binaries for darwin/linux on amd64/arm64 are also attached to each
+[release](https://github.com/Sousf/hmon/releases).
 
 ## Configure
 

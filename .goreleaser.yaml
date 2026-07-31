@@ -40,17 +40,19 @@ archives:
 checksum:
   name_template: checksums.txt
 
-# A cask, not a formula: Homebrew now expects prebuilt binaries to ship as
-# casks, and GoReleaser has deprecated the `brews` block accordingly. The
-# tradeoff is that casks are macOS-only — Linux users install with `go install`
-# or the release tarball, both documented in the README.
+# A formula rather than a cask, deliberately. GoReleaser marks `brews` as
+# deprecated because Homebrew wants prebuilt binaries shipped as casks, but
+# casks are macOS-only — and this tool watches Linux machines, so being
+# installable on a Linux workstation matters more here than following that
+# convention. Formulae also avoid the Gatekeeper quarantine that casks have to
+# strip explicitly.
 #
-# The cask also clears the macOS quarantine attribute, without which an
-# unsigned binary downloaded from GitHub is blocked by Gatekeeper on first run.
-homebrew_casks:
+# Only one of the two can exist under a given name: Homebrew resolves an
+# ambiguous name to the formula and ignores the cask, so shipping both would
+# leave the cask uninstallable.
+brews:
   - name: hmon
     ids: [hmon]
-    binaries: [hmon]
     repository:
       owner: Sousf
       name: homebrew-tap
@@ -62,20 +64,19 @@ homebrew_casks:
       git:
         url: git@github.com:Sousf/homebrew-tap.git
         private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY_PATH }}"
-    directory: Casks
+    directory: Formula
     homepage: https://github.com/Sousf/hmon
     description: Terminal dashboard for a small fleet of Linux machines over SSH
     license: MIT
     commit_author:
       name: goreleaser
       email: noreply@github.com
-    hooks:
-      post:
-        install: |
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr",
-                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/hmon"]
-          end
+    install: |
+      bin.install "hmon"
+    test: |
+      # -example needs no config, no network, and no TTY, so it is the only
+      # command that can meaningfully run under `brew test`.
+      assert_match "hosts:", shell_output("#{bin}/hmon -example")
     caveats: |
       hmon reads ~/.config/hmon/config.yaml. Create a starter one with:
 
