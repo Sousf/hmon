@@ -52,7 +52,7 @@ func (m Model) renderTable() string {
 	b.WriteString("  ")
 	b.WriteString(styleHeader.Render(
 		padRight("HOST", nameW+healthFlagW) + "  " +
-			padRight("STATUS", colStatusW) + "  " +
+			padCentre("STATUS", colStatusW) + "  " +
 			padLeft("UPTIME", colUpW) + "  " +
 			padLeft("CPU", colCPUW) + " " +
 			padRight("", colSparkW) + "  " +
@@ -207,8 +207,9 @@ func statusCell(h *model.Host) string {
 	// The column keeps its full width even when only a dot is drawn, so nothing
 	// to its right shifts when a host changes state. A table whose columns move
 	// the moment something goes wrong is hard to read at exactly the moment it
-	// matters.
-	return statusStyle(h).Render(padRight(statusText(h), colStatusW))
+	// matters. Contents are centred so a lone dot sits in the column rather
+	// than clinging to its left edge.
+	return statusStyle(h).Render(padCentre(statusText(h), colStatusW))
 }
 
 // statusInline renders the same status without column padding, for the detail

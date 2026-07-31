@@ -170,3 +170,20 @@ func padLeft(s string, width int) string {
 	}
 	return strings.Repeat(" ", n) + s
 }
+
+// padCentre centres s in a field of the given display width.
+//
+// Used for the status column, whose contents range from a single dot to a
+// short phrase. Left-aligning leaves a lone dot hugging the edge of a column
+// that is sized for the longest label it might ever hold; centring keeps it
+// visually attached to the column instead. Odd remainders go to the right, so
+// a cell one short of the full width sits left of centre rather than drifting
+// past it.
+func padCentre(s string, width int) string {
+	n := width - runewidth.StringWidth(s)
+	if n <= 0 {
+		return s
+	}
+	left := n / 2
+	return strings.Repeat(" ", left) + s + strings.Repeat(" ", n-left)
+}

@@ -733,8 +733,20 @@ func TestTableHeaderAlignsWithRows(t *testing.T) {
 	if got, want := colOf(header, "HOST"), colOf(row, "alpha"); got != want {
 		t.Errorf("HOST header at column %d but host name at column %d", got, want)
 	}
-	if got, want := colOf(header, "STATUS"), colOf(row, "●"); got != want {
-		t.Errorf("STATUS header at column %d but status dot at column %d", got, want)
+
+	// The status column is centred rather than left-aligned, so its header and
+	// its contents deliberately do not share a starting column. What must hold
+	// is that the dot lands inside the column, near its middle.
+	statusStart := colOf(header, "STATUS")
+	dot := colOf(row, "●")
+	centre := statusStart - (colStatusW-len("STATUS"))/2 + colStatusW/2
+	if dot < statusStart-2 || dot > statusStart+colStatusW {
+		t.Errorf("status dot at column %d is outside the STATUS column starting at %d",
+			dot, statusStart)
+	}
+	if diff := dot - centre; diff < -1 || diff > 1 {
+		t.Errorf("status dot at column %d, want within one of the column centre %d",
+			dot, centre)
 	}
 }
 
@@ -958,6 +970,57 @@ func TestWatchedContainersPolledForEveryHost(t *testing.T) {
 	for _, ln := range strings.Split(m.View(), "\n") {
 		if strings.Contains(ln, "beta") && strings.Contains(ln, glyphFailed) {
 			t.Errorf("unselected host flagged despite a running container: %q", ln)
+		}
+	}
+}
+
+func TestPadCentre(t *testing.T) {
+	tests := []struct {
+		s     string
+		width int
+		want  string
+	}{
+		{"●", 9, "    ●    "},
+		{"○ down", 9, " ○ down  "},    // odd remainder goes right
+		{"⚠ bad out", 9, "⚠ bad out"}, // exact fit, untouched
+		{"toolong", 3, "toolong"},     // never truncates
+		{"", 4, "    "},
+	}
+	for _, tt := range tests {
+		if got := padCentre(tt.s, tt.width); got != tt.want {
+			t.Errorf("padCentre(%q, %d) = %q, want %q", tt.s, tt.width, got, tt.want)
+		}
+	}
+
+	// Double-width input must be measured in columns, like the other padders.
+	if got := padCentre("日本", 8); runewidth.StringWidth(got) != 8 {
+		t.Errorf("padCentre with double-width text has width %d, want 8",
+			runewidth.StringWidth(got))
+	}
+}
+
+// TestStatusDotsAlignAcrossRows is the property that actually matters: with a
+// healthy fleet every dot must sit in the same column, so the eye can scan
+// straight down them.
+func TestStatusDotsAlignAcrossRows(t *testing.T) {
+	m, fleet := testModel(t, "a", "bb", "ccc")
+	for _, n := range []string{"a", "bb", "ccc"} {
+		fleet.Apply(n, Sample(t, 10))
+	}
+
+	var cols []int
+	for _, ln := range strings.Split(m.View(), "\n") {
+		if c := colOf(ln, "●"); c >= 0 {
+			cols = append(cols, c)
+		}
+	}
+	if len(cols) != 3 {
+		t.Fatalf("found %d status dots, want 3", len(cols))
+	}
+	for i, c := range cols {
+		if c != cols[0] {
+			t.Errorf("dot %d at column %d, want %d — hosts of differing name length "+
+				"must not shift the status column", i, c, cols[0])
 		}
 	}
 }
