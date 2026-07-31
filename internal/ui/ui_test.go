@@ -306,6 +306,31 @@ func TestRenderTableShowsHostsAndStatus(t *testing.T) {
 	}
 }
 
+// TestSparklineIsBlankWhenIdle guards against an idle fleet drawing eight ▁ in
+// a row, which merges into a solid rule and reads as a table border rather
+// than as data.
+func TestSparklineIsBlankWhenIdle(t *testing.T) {
+	idle := []float64{1, 0.4, 1.2, 0, 1, 0.8, 1, 1}
+	if got := sparkline(idle, 8, 100); strings.TrimSpace(got) != "" {
+		t.Errorf("idle sparkline = %q, want all blank", got)
+	}
+
+	// Real activity must still render, otherwise the column is useless.
+	busy := []float64{5, 20, 45, 80, 95, 60, 30, 10}
+	got := sparkline(busy, 8, 100)
+	if strings.TrimSpace(got) == "" {
+		t.Errorf("busy sparkline = %q, want visible blocks", got)
+	}
+	if !strings.ContainsRune(got, '█') {
+		t.Errorf("busy sparkline = %q, want a full block for the 95%% sample", got)
+	}
+
+	// Width must stay fixed either way, or columns to the right shift.
+	if a, b := len([]rune(sparkline(idle, 8, 100))), len([]rune(got)); a != b || a != 8 {
+		t.Errorf("sparkline widths = %d and %d, want both 8", a, b)
+	}
+}
+
 // TestTableHeaderAlignsWithRows guards a bug the unit tests could not see:
 // data rows carry a two-character selection cursor, so a header without the
 // same pad puts every column label two characters left of its values.

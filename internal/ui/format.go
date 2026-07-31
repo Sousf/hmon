@@ -7,8 +7,17 @@ import (
 	"time"
 )
 
-// sparkChars run from lowest to highest; index 0 is used for zero.
+// sparkChars run from lowest to highest.
 var sparkChars = []rune("▁▂▃▄▅▆▇█")
+
+// idleFraction is the share of the scale below which a sample draws nothing at
+// all rather than the lowest block.
+//
+// Without this, an idle fleet renders eight ▁ in a row, which visually merges
+// into a solid horizontal rule and reads as a table border rather than as
+// data. Since the numeric percentage sits right beside the sparkline, drawing
+// nothing loses no information and lets genuine activity stand out.
+const idleFraction = 0.02
 
 // sparkline renders values as a fixed-width run of block characters, padded on
 // the left so a host with little history stays column-aligned with one that has
@@ -41,8 +50,10 @@ func sparkline(values []float64, width int, max float64) string {
 }
 
 func sparkChar(v, max float64) rune {
-	if math.IsNaN(v) || v <= 0 {
-		return sparkChars[0]
+	// Idle draws blank, so a quiet fleet shows an empty column instead of a
+	// line that looks like table furniture.
+	if math.IsNaN(v) || v/max < idleFraction {
+		return ' '
 	}
 	idx := int(v / max * float64(len(sparkChars)))
 	if idx >= len(sparkChars) {
