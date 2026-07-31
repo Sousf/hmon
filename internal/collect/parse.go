@@ -78,6 +78,49 @@ func Parse(out []byte, at time.Time) (model.Sample, error) {
 				}
 			}
 
+		case "swap":
+			// Also kilobytes from /proc/meminfo, for the same awk reason as mem.
+			if len(args) >= 2 {
+				totalKB, err1 := strconv.ParseUint(args[0], 10, 64)
+				freeKB, err2 := strconv.ParseUint(args[1], 10, 64)
+				if err1 == nil && err2 == nil {
+					s.SwapTotal, s.SwapFree = totalKB*1024, freeKB*1024
+				}
+			}
+
+		case "cores":
+			if len(args) >= 1 {
+				if n, err := strconv.Atoi(args[0]); err == nil && n > 0 {
+					s.Cores = n
+				}
+			}
+
+		case "failedcount":
+			// Emitted even when zero, which is what distinguishes "systemd is
+			// present and nothing is failing" from "this host has no systemd".
+			if len(args) >= 1 {
+				if _, err := strconv.Atoi(args[0]); err == nil {
+					s.HasUnitInfo = true
+				}
+			}
+
+		case "failed":
+			s.FailedUnits = append(s.FailedUnits, args...)
+
+		case "rebootrequired":
+			s.RebootRequired = true
+
+		case "disk":
+			if len(args) >= 3 {
+				read, err1 := strconv.ParseUint(args[1], 10, 64)
+				written, err2 := strconv.ParseUint(args[2], 10, 64)
+				if err1 == nil && err2 == nil {
+					s.Disks = append(s.Disks, model.Disk{
+						Name: args[0], SectorsRead: read, SectorsWritten: written,
+					})
+				}
+			}
+
 		case "load":
 			if len(args) >= 3 {
 				for i := 0; i < 3; i++ {

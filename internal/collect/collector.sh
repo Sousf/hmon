@@ -54,18 +54,64 @@ if [ -r /proc/meminfo ]; then
     /^MemTotal:/     {total=$2}
     /^MemAvailable:/ {avail=$2; found=1}
     /^MemFree:/      {free=$2}
+    /^SwapTotal:/    {swaptotal=$2}
+    /^SwapFree:/     {swapfree=$2}
     END {
       if (total + 0 > 0) {
         if (!found) avail = free   # pre-3.14 kernels lack MemAvailable
         printf "mem %.0f %.0f\n", total, avail
       }
+      # A host that is swapping is in trouble well before its memory
+      # percentage looks alarming, so this is worth reporting separately.
+      if (swaptotal + 0 > 0) printf "swap %.0f %.0f\n", swaptotal, swapfree
     }' /proc/meminfo
 fi
 
 # --- load ------------------------------------------------------------------
+# Core count travels with the load average because load is meaningless without
+# it: 4.0 is idle on a 16-core box and a crisis on a dual-core Pi.
 if [ -r /proc/loadavg ]; then
   read -r l1 l5 l15 _ < /proc/loadavg
   echo "load $l1 $l5 $l15"
+fi
+cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 0)
+[ "$cores" -gt 0 ] 2>/dev/null && echo "cores $cores"
+
+# --- failed services -------------------------------------------------------
+# Resource metrics cannot tell you a service died: a host with a crashed
+# postgres looks perfectly healthy on CPU and memory. Names are emitted one
+# per line, with the count first so the client can show a health indicator
+# without parsing every name.
+if command -v systemctl >/dev/null 2>&1; then
+  failed=$(systemctl list-units --state=failed --no-legend --plain --no-pager 2>/dev/null \
+             | awk '{print $1}' | grep -v '^$')
+  if [ -n "$failed" ]; then
+    printf 'failedcount %s\n' "$(printf '%s\n' "$failed" | wc -l | tr -d ' ')"
+    printf 'failed %s\n' $failed
+  else
+    echo "failedcount 0"
+  fi
+fi
+
+# --- reboot required -------------------------------------------------------
+[ -f /var/run/reboot-required ] && echo "rebootrequired 1"
+
+# --- disk i/o --------------------------------------------------------------
+# Cumulative sector counts; rates are derived client-side like the network
+# counters. Field 3 is the device name, 6 is sectors read, 10 sectors written.
+# Sectors are always 512 bytes here regardless of physical block size.
+#
+# Partitions and virtual devices are skipped so a disk is not counted twice —
+# reads on /dev/sda1 also appear on /dev/sda.
+if [ -r /proc/diskstats ]; then
+  awk '{
+    dev = $3
+    if (dev ~ /^(loop|ram|dm-|sr|fd)/) next
+    if (dev ~ /[0-9]+$/ && dev ~ /^(sd|vd|hd)/) next   # partitions of sd/vd/hd
+    if (dev ~ /^nvme[0-9]+n[0-9]+p[0-9]+$/) next       # nvme partitions
+    if ($6 + $10 == 0) next                            # never used
+    print "disk", dev, $6, $10
+  }' /proc/diskstats
 fi
 
 # --- filesystems -----------------------------------------------------------

@@ -53,9 +53,24 @@ func (m Model) detailPane(h *model.Host, budget int) []string {
 		return clampLines(head, budget)
 	}
 
+	// Failed units go directly under the header: it is the one condition here
+	// that means something is actually broken, so it should not be below the
+	// fold on a short pane.
+	if len(h.Cur.FailedUnits) > 0 {
+		head = append(head, "")
+		head = append(head, "  "+styleCrit.Render("✗ failed: ")+
+			styleText.Render(truncate(strings.Join(h.Cur.FailedUnits, ", "), maxInt(20, m.width-16))))
+	}
+	if h.Cur.RebootRequired {
+		head = append(head, "  "+styleWarn.Render("⟳ reboot required"))
+	}
+
 	head = append(head, "")
 	head = append(head, "  "+m.paneCPULine(h))
 	head = append(head, "  "+m.paneMemLine(h))
+	if swap := m.paneSwapLine(h); swap != "" {
+		head = append(head, "  "+swap)
+	}
 
 	if len(h.Cur.FS) > 0 {
 		head = append(head, "")
@@ -67,6 +82,9 @@ func (m Model) detailPane(h *model.Host, budget int) []string {
 	if net := m.paneNetLine(h); net != "" {
 		head = append(head, "")
 		head = append(head, "  "+net)
+	}
+	if disk := m.paneDiskLine(h); disk != "" {
+		head = append(head, "  "+disk)
 	}
 
 	if temps := m.paneTempLine(h); temps != "" {
@@ -98,8 +116,7 @@ func paneUptime(h *model.Host) string {
 
 func (m Model) paneCPULine(h *model.Host) string {
 	label := styleHeader.Render(padRight("CPU", 6))
-	load := styleDim.Render(fmt.Sprintf("   LOAD  %.2f  %.2f  %.2f",
-		h.Cur.Load[0], h.Cur.Load[1], h.Cur.Load[2]))
+	load := m.loadText(h)
 
 	if !h.HasCPUPct {
 		return label + styleDim.Render(padLeft("—", 6)) + "  " +
@@ -109,6 +126,63 @@ func (m Model) paneCPULine(h *model.Host) string {
 		levelStyle(m.cfg.Thresholds.CPU.Classify(h.CPUPct)).
 			Render(padLeft(fmt.Sprintf("%.1f%%", h.CPUPct), 6)) + "  " +
 		styleDim.Render(sparkline(h.CPUHist.Values(), paneSparkW, 100)) + load
+}
+
+// loadText renders the load average against core count. Load alone is not
+// comparable between machines — 4.0 is idle on a 16-core box and a crisis on a
+// dual-core Pi — so the per-core ratio is what gets coloured.
+func (m Model) loadText(h *model.Host) string {
+	raw := fmt.Sprintf("   LOAD  %.2f  %.2f  %.2f",
+		h.Cur.Load[0], h.Cur.Load[1], h.Cur.Load[2])
+
+	ratio, ok := h.Cur.LoadPerCore()
+	if !ok {
+		return styleDim.Render(raw)
+	}
+	// 1.0 per core means fully committed; warn approaching it and flag beyond.
+	st := styleOK
+	switch {
+	case ratio >= 1.0:
+		st = styleCrit
+	case ratio >= 0.7:
+		st = styleWarn
+	}
+	return styleDim.Render(raw) + "  " +
+		st.Render(fmt.Sprintf("(%.0f%% of %d cores)", ratio*100, h.Cur.Cores))
+}
+
+func (m Model) paneSwapLine(h *model.Host) string {
+	// No swap configured is normal and not worth a line.
+	if h.Cur.SwapTotal == 0 {
+		return ""
+	}
+	pct := h.Cur.SwapPct()
+	// Swap thresholds are deliberately tighter than memory: any sustained swap
+	// use on a homelab box is a symptom, not a steady state.
+	st := styleOK
+	switch {
+	case pct >= 50:
+		st = styleCrit
+	case pct >= 10:
+		st = styleWarn
+	}
+	return styleHeader.Render(padRight("SWAP", 6)) +
+		st.Render(padLeft(fmt.Sprintf("%.0f%%", pct), 6)) + "  " +
+		padRight("", paneSparkW) +
+		styleText.Render(fmt.Sprintf("   %s / %s",
+			humanBytes(h.Cur.SwapUsed()), humanBytes(h.Cur.SwapTotal)))
+}
+
+func (m Model) paneDiskLine(h *model.Host) string {
+	if !h.HasDisk {
+		return ""
+	}
+	parts := make([]string, 0, len(h.DiskRates))
+	for _, d := range h.DiskRates {
+		parts = append(parts, styleText.Render(d.Name)+" "+
+			styleDim.Render(fmt.Sprintf("r%s w%s", humanRate(d.Read), humanRate(d.Write))))
+	}
+	return styleHeader.Render(padRight("DISK", 6)) + strings.Join(parts, "   ")
 }
 
 func (m Model) paneMemLine(h *model.Host) string {

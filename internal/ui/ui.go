@@ -7,6 +7,7 @@ package ui
 
 import (
 	"context"
+	"os/exec"
 	"sort"
 	"time"
 
@@ -74,6 +75,10 @@ type (
 		kind model.FailKind
 		err  string
 	}
+	// resumedMsg arrives when an interactive ssh session hands the terminal
+	// back, and triggers an immediate refresh so the table is not showing
+	// values from before the session started.
+	resumedMsg struct{}
 )
 
 // Poller is the collection dependency, narrowed to what the UI actually calls
@@ -98,8 +103,9 @@ type Model struct {
 	width, height int
 	now           time.Time
 
-	// inFlight prevents a slow host from accumulating overlapping polls. The
-	// config guarantees timeout < interval, so this is belt-and-braces.
+	// inFlight prevents a slow host from accumulating overlapping polls. A
+	// timeout longer than the interval is allowed, so this is what actually
+	// keeps a slow host from stacking up requests.
 	inFlight map[string]bool
 
 	quitting bool
@@ -143,8 +149,7 @@ func (m Model) pollAll() tea.Cmd {
 		// screen — either the full detail view, or the split pane on a tall
 		// terminal. They cost an extra ~0.5s sampling window remotely, so the
 		// rest of the fleet never pays for them.
-		showingDetail := m.view == viewDetail || m.splitActive()
-		withProcs := showingDetail && h.Name == m.selected
+		withProcs := m.showingProcs() && h.Name == m.selected
 		cmds = append(cmds, m.pollOne(h.Name, h.Addr, withProcs))
 	}
 	return tea.Batch(cmds...)
@@ -194,6 +199,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.inFlight, msg.host)
 		m.fleet.Fail(msg.host, msg.kind, msg.err)
 		return m, nil
+
+	case resumedMsg:
+		// Whatever was on screen is now as old as the ssh session was long.
+		cmd := m.pollAll()
+		m.markInFlight()
+		return m, cmd
 	}
 	return m, nil
 }
@@ -245,14 +256,29 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.markInFlight()
 		return m, cmd
 
+	case "S":
+		// Hand the terminal to ssh and take it back when the shell exits.
+		// Bubble Tea restores the alt screen and input mode around this, so a
+		// crashed session cannot leave the terminal in a broken state.
+		if h, ok := m.fleet.Get(m.selected); ok {
+			return m, tea.ExecProcess(exec.Command("ssh", h.Addr), func(error) tea.Msg {
+				// Errors are deliberately dropped: ssh has already printed
+				// whatever went wrong to the terminal the user was just
+				// looking at, and a non-zero exit is normal (Ctrl-D, remote
+				// exit 1, dropped connection).
+				return resumedMsg{}
+			})
+		}
+		return m, nil
+
 	case "c":
-		if m.view == viewDetail {
+		if m.showingProcs() {
 			m.procSort = procByCPU
 		}
 		return m, nil
 
 	case "m":
-		if m.view == viewDetail {
+		if m.showingProcs() {
 			m.procSort = procByMem
 		}
 		return m, nil
@@ -356,4 +382,11 @@ func (m Model) View() string {
 		return m.renderDetail()
 	}
 	return m.renderTable()
+}
+
+// showingProcs reports whether a process list is currently on screen, which is
+// what decides both whether to collect processes and whether the sort keys do
+// anything.
+func (m Model) showingProcs() bool {
+	return m.view == viewDetail || m.splitActive()
 }

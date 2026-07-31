@@ -105,6 +105,77 @@ func TestCounterResetProducesNoRate(t *testing.T) {
 	}
 }
 
+func TestDiskRatesFromTwoSamples(t *testing.T) {
+	f := testFleet()
+	f.Apply("nas", Sample{
+		At:    time.Unix(100, 0),
+		Disks: []Disk{{Name: "nvme0n1", SectorsRead: 1000, SectorsWritten: 2000}},
+	})
+	f.Apply("nas", Sample{
+		At:    time.Unix(102, 0),
+		Disks: []Disk{{Name: "nvme0n1", SectorsRead: 1400, SectorsWritten: 3000}},
+	})
+
+	h, _ := f.Get("nas")
+	if !h.HasDisk {
+		t.Fatal("HasDisk = false, want true")
+	}
+	read, write := h.TotalDisk()
+	// 400 sectors × 512 bytes over 2 seconds.
+	if got, want := read, 400.0*512/2; math.Abs(got-want) > 0.001 {
+		t.Errorf("read = %v B/s, want %v", got, want)
+	}
+	if got, want := write, 1000.0*512/2; math.Abs(got-want) > 0.001 {
+		t.Errorf("write = %v B/s, want %v", got, want)
+	}
+}
+
+// TestDiskCounterResetProducesNoRate mirrors the network and CPU reboot guard:
+// counters restarting must not underflow into an enormous fictional rate.
+func TestDiskCounterResetProducesNoRate(t *testing.T) {
+	f := testFleet()
+	f.Apply("nas", Sample{
+		At:    time.Unix(100, 0),
+		Disks: []Disk{{Name: "nvme0n1", SectorsRead: 9_000_000, SectorsWritten: 8_000_000}},
+	})
+	f.Apply("nas", Sample{
+		At:    time.Unix(102, 0),
+		Disks: []Disk{{Name: "nvme0n1", SectorsRead: 12, SectorsWritten: 40}},
+	})
+
+	h, _ := f.Get("nas")
+	if h.HasDisk {
+		r, w := h.TotalDisk()
+		t.Errorf("HasDisk = true after reset (r=%v w=%v), want false", r, w)
+	}
+}
+
+func TestLoadPerCoreNeedsCoreCount(t *testing.T) {
+	s := Sample{Load: [3]float64{8, 4, 2}, Cores: 16}
+	ratio, ok := s.LoadPerCore()
+	if !ok || math.Abs(ratio-0.5) > 0.0001 {
+		t.Errorf("LoadPerCore() = %v, %v; want 0.5, true", ratio, ok)
+	}
+
+	// Without a core count the ratio is meaningless, so report nothing rather
+	// than assuming a number.
+	s.Cores = 0
+	if _, ok := s.LoadPerCore(); ok {
+		t.Error("LoadPerCore() ok = true with no core count, want false")
+	}
+}
+
+func TestSwapPct(t *testing.T) {
+	s := Sample{SwapTotal: 4000, SwapFree: 1000}
+	if got, want := s.SwapPct(), 75.0; math.Abs(got-want) > 0.001 {
+		t.Errorf("SwapPct() = %v, want %v", got, want)
+	}
+	// No swap configured must not divide by zero.
+	if got := (Sample{}).SwapPct(); got != 0 {
+		t.Errorf("SwapPct() with no swap = %v, want 0", got)
+	}
+}
+
 func TestNewInterfaceIgnoredUntilItHasHistory(t *testing.T) {
 	f := testFleet()
 	f.Apply("nas", Sample{

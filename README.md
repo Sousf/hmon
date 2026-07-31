@@ -67,7 +67,8 @@ no alerting.
 | `↑` `↓` / `k` `j` | Move selection |
 | `enter` / `esc` | Open / leave detail view |
 | `s` / `i` | Cycle sort column / invert |
-| `c` / `m` | Sort processes by CPU / memory (detail view) |
+| `c` / `m` | Sort processes by CPU / memory |
+| `S` | Open an interactive ssh session on the selected host |
 | `r` / `q` | Refresh / quit |
 
 The layout is responsive. On a tall terminal the space below the table shows
@@ -78,6 +79,20 @@ view.
 
 Process CPU is a true instantaneous measurement, sampled from `/proc/<pid>/stat`
 twice and diffed, rather than `ps`'s lifetime average.
+
+`S` hands the terminal to `ssh` for the selected host and takes it back when
+you exit, refreshing on return.
+
+## Health
+
+Resource metrics cannot tell you a service died — a host with a crashed
+postgres looks perfectly healthy on CPU and memory. hmon flags conditions no
+column can express, against the host name:
+
+| Flag | Meaning |
+|---|---|
+| `✗` | One or more systemd units in the failed state (named in the detail pane) |
+| `⟳` | Reboot required (`/var/run/reboot-required`) |
 
 ## Notes
 

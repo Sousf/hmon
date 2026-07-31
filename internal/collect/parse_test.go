@@ -163,6 +163,99 @@ end
 	}
 }
 
+func TestParseHealthAndCapacityFields(t *testing.T) {
+	out := `v 1
+mem 16000000 8000000
+swap 4194300 3000000
+cores 16
+load 0.42 0.38 0.31
+failedcount 2
+failed openipmi.service postgresql.service
+rebootrequired 1
+disk nvme0n1 9396806 82988794
+disk sda 100 200
+end
+`
+	s, err := Parse([]byte(out), time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	// Swap arrives in KB like memory, for the same awk-overflow reason.
+	if got, want := s.SwapTotal, uint64(4194300*1024); got != want {
+		t.Errorf("SwapTotal = %d, want %d", got, want)
+	}
+	if got, want := s.SwapUsed(), uint64((4194300-3000000)*1024); got != want {
+		t.Errorf("SwapUsed() = %d, want %d", got, want)
+	}
+
+	if got, want := s.Cores, 16; got != want {
+		t.Errorf("Cores = %d, want %d", got, want)
+	}
+	// Load is only interpretable against core count.
+	ratio, ok := s.LoadPerCore()
+	if !ok {
+		t.Fatal("LoadPerCore() ok = false, want true")
+	}
+	if math.Abs(ratio-0.42/16) > 0.0001 {
+		t.Errorf("LoadPerCore() = %v, want %v", ratio, 0.42/16)
+	}
+
+	if got, want := len(s.FailedUnits), 2; got != want {
+		t.Fatalf("FailedUnits = %d, want %d: %v", got, want, s.FailedUnits)
+	}
+	if s.FailedUnits[0] != "openipmi.service" {
+		t.Errorf("FailedUnits[0] = %q", s.FailedUnits[0])
+	}
+	if !s.HasUnitInfo {
+		t.Error("HasUnitInfo = false, want true")
+	}
+	if !s.RebootRequired {
+		t.Error("RebootRequired = false, want true")
+	}
+
+	if got, want := len(s.Disks), 2; got != want {
+		t.Fatalf("Disks = %d, want %d", got, want)
+	}
+	if got, want := s.Disks[0].SectorsWritten, uint64(82988794); got != want {
+		t.Errorf("SectorsWritten = %d, want %d", got, want)
+	}
+}
+
+// TestParseDistinguishesHealthyFromNoSystemd covers the difference between
+// "systemd is present and nothing failed" and "this host has no systemd" —
+// reporting an all-clear for the latter would be a lie.
+func TestParseDistinguishesHealthyFromNoSystemd(t *testing.T) {
+	healthy, err := Parse([]byte("v 1\nfailedcount 0\nend\n"), time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !healthy.HasUnitInfo || len(healthy.FailedUnits) != 0 {
+		t.Errorf("healthy host: HasUnitInfo=%v units=%v, want true and none",
+			healthy.HasUnitInfo, healthy.FailedUnits)
+	}
+
+	none, err := Parse([]byte("v 1\nend\n"), time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.HasUnitInfo {
+		t.Error("host without systemd reports HasUnitInfo = true, want false")
+	}
+}
+
+func TestParseOmitsSwapWhenNotConfigured(t *testing.T) {
+	// The collector emits no swap line at all when SwapTotal is zero, which is
+	// the normal case on these hosts.
+	s, err := Parse([]byte("v 1\nmem 1000 500\nend\n"), time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.SwapTotal != 0 || s.SwapPct() != 0 {
+		t.Errorf("SwapTotal = %d, SwapPct = %v, want zero", s.SwapTotal, s.SwapPct())
+	}
+}
+
 func TestParseHostWithoutSensors(t *testing.T) {
 	// No exposed sensors is normal hardware variation, not an error.
 	s, err := Parse([]byte("v 1\nmem 1000 500\nend\n"), time.Unix(0, 0))

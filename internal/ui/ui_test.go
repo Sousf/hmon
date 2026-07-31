@@ -306,6 +306,103 @@ func TestRenderTableShowsHostsAndStatus(t *testing.T) {
 	}
 }
 
+// TestFailedUnitFlaggedInTable covers the gap the health check exists to
+// close: a host with a crashed service looks perfectly healthy in every
+// resource column, so the failure has to be visible without drilling in.
+func TestFailedUnitFlaggedInTable(t *testing.T) {
+	m, fleet := testModel(t)
+	s := Sample(t, 10)
+	s.FailedUnits = []string{"postgresql.service"}
+	s.HasUnitInfo = true
+	fleet.Apply("alpha", s)
+
+	healthy := Sample(t, 10)
+	healthy.HasUnitInfo = true
+	fleet.Apply("beta", healthy)
+
+	out := m.View()
+	var alphaLine, betaLine string
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "alpha") {
+			alphaLine = ln
+		}
+		if strings.Contains(ln, "beta") {
+			betaLine = ln
+		}
+	}
+	if !strings.Contains(alphaLine, "✗") {
+		t.Errorf("host with a failed unit not flagged: %q", alphaLine)
+	}
+	if strings.Contains(betaLine, "✗") {
+		t.Errorf("healthy host wrongly flagged: %q", betaLine)
+	}
+}
+
+func TestRebootRequiredFlagged(t *testing.T) {
+	m, fleet := testModel(t)
+	s := Sample(t, 10)
+	s.RebootRequired = true
+	fleet.Apply("alpha", s)
+
+	if !strings.Contains(m.View(), "⟳") {
+		t.Error("reboot-required host not flagged in table")
+	}
+}
+
+// TestDetailPaneShowsHealthAndCapacity checks the pane surfaces what the table
+// only hints at.
+func TestDetailPaneShowsHealthAndCapacity(t *testing.T) {
+	m, fleet := testModel(t)
+	s := Sample(t, 10)
+	s.FailedUnits = []string{"openipmi.service"}
+	s.HasUnitInfo = true
+	s.RebootRequired = true
+	s.Cores = 16
+	s.Load = [3]float64{8, 4, 2}
+	s.SwapTotal = 4 << 30
+	s.SwapFree = 1 << 30
+	fleet.Apply("alpha", s)
+	h, _ := fleet.Get("alpha")
+
+	out := strings.Join(m.detailPane(h, 40), "\n")
+	for _, want := range []string{
+		"openipmi.service", // the actual broken unit, named
+		"reboot required",
+		"16 cores", // load is meaningless without this
+		"SWAP",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("detail pane missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestSwapLineHiddenWhenNoSwapConfigured(t *testing.T) {
+	m, fleet := testModel(t)
+	fleet.Apply("alpha", Sample(t, 10)) // no swap fields set
+	h, _ := fleet.Get("alpha")
+
+	if out := strings.Join(m.detailPane(h, 40), "\n"); strings.Contains(out, "SWAP") {
+		t.Errorf("swap line shown for a host with no swap:\n%s", out)
+	}
+}
+
+func TestSSHKeyLaunchesSessionForSelectedHost(t *testing.T) {
+	m, _ := testModel(t)
+	m.selected = "beta"
+
+	_, cmd := m.Update(key("S"))
+	if cmd == nil {
+		t.Fatal("S produced no command, want an ssh exec")
+	}
+	// The process is not actually run here — that would take over the test's
+	// terminal — but the command must exist and the model must not have
+	// changed view or selection.
+	if m.view != viewTable || m.selected != "beta" {
+		t.Errorf("S changed state: view=%v selected=%q", m.view, m.selected)
+	}
+}
+
 func TestSplitActivatesOnlyWhenTallEnough(t *testing.T) {
 	m, _ := testModel(t)
 

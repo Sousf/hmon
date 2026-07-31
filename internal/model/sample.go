@@ -70,6 +70,18 @@ type NIC struct {
 	TxBytes uint64
 }
 
+// Disk holds cumulative sector counters for one block device. Sectors in
+// /proc/diskstats are always 512 bytes regardless of the device's physical
+// block size.
+type Disk struct {
+	Name           string
+	SectorsRead    uint64
+	SectorsWritten uint64
+}
+
+// DiskSectorBytes is the fixed sector size /proc/diskstats reports in.
+const DiskSectorBytes = 512
+
 // Temp is a single temperature sensor reading in degrees Celsius.
 type Temp struct {
 	Label string
@@ -113,13 +125,58 @@ type Sample struct {
 	Load     [3]float64
 	FS       []FS
 	NICs     []NIC
+	Disks    []Disk
 	Temps    []Temp
 	Procs    []Proc
+
+	// Cores is the CPU count, without which a load average cannot be read: 4.0
+	// is idle on a 16-core box and a crisis on a dual-core Pi.
+	Cores int
+
+	SwapTotal uint64 // bytes; zero means no swap configured
+	SwapFree  uint64
+
+	// FailedUnits are systemd units in the failed state. This is the only
+	// signal here that catches a crashed service — a host with a dead postgres
+	// looks perfectly healthy on CPU and memory.
+	FailedUnits []string
+	// HasUnitInfo distinguishes "no failed units" from "systemd not present",
+	// so a non-systemd host shows nothing rather than a misleading all-clear.
+	HasUnitInfo bool
+
+	RebootRequired bool
 
 	// HasCPU and HasMem record whether those readings were present at all, so
 	// a host that omits them renders "n/a" rather than a convincing zero.
 	HasCPU bool
 	HasMem bool
+}
+
+// SwapUsed is swap in use, in bytes.
+func (s Sample) SwapUsed() uint64 {
+	if s.SwapFree > s.SwapTotal {
+		return 0
+	}
+	return s.SwapTotal - s.SwapFree
+}
+
+// SwapPct is swap in use as a percentage of total, or zero when no swap is
+// configured.
+func (s Sample) SwapPct() float64 {
+	if s.SwapTotal == 0 {
+		return 0
+	}
+	return float64(s.SwapUsed()) / float64(s.SwapTotal) * 100
+}
+
+// LoadPerCore expresses the one-minute load average as a fraction of available
+// cores, which is the form that means the same thing on every machine: 1.0 is
+// fully committed regardless of core count.
+func (s Sample) LoadPerCore() (float64, bool) {
+	if s.Cores <= 0 {
+		return 0, false
+	}
+	return s.Load[0] / float64(s.Cores), true
 }
 
 // MemUsed is total minus available. MemAvailable already accounts for

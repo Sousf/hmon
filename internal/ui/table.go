@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Sousf/hmon/internal/config"
 	"github.com/Sousf/hmon/internal/model"
 )
 
@@ -49,7 +48,7 @@ func (m Model) renderTable() string {
 	// characters left of its values.
 	b.WriteString("  ")
 	b.WriteString(styleHeader.Render(
-		padRight("HOST", nameW) + "  " +
+		padRight("HOST", nameW+healthFlagW) + "  " +
 			padRight("STATUS", colStatusW) + "  " +
 			padLeft("CPU", colCPUW) + " " +
 			padRight("", colSparkW) + "  " +
@@ -84,7 +83,7 @@ func (m Model) renderTable() string {
 
 	b.WriteString("\n")
 	b.WriteString(styleHelp.Render(fmt.Sprintf(
-		"↑↓ move · enter full detail · s sort (%s%s) · i invert · r refresh · q quit",
+		"↑↓ move · enter detail · S ssh · s sort (%s%s) · i invert · r refresh · q quit",
 		m.sort, arrow(m.sortDesc))))
 	return b.String()
 }
@@ -120,6 +119,9 @@ func (m Model) renderRow(h *model.Host, nameW int) string {
 	} else {
 		name = styleText.Render(name)
 	}
+	// A failed unit is invisible in every resource column, so flag it against
+	// the host name where it cannot be missed.
+	name += healthFlag(h)
 
 	// A host that is down has no current readings; showing stale numbers would
 	// imply the machine is still reporting them.
@@ -141,6 +143,25 @@ func (m Model) renderRow(h *model.Host, nameW int) string {
 		m.diskCell(h) + "  " +
 		m.tempCell(h) + "  " +
 		netCell(h)
+}
+
+// healthFlagW is the fixed width the flag occupies so every column to the
+// right stays aligned whether or not a host has something to report.
+const healthFlagW = 2
+
+// healthFlag marks conditions no resource column can express: a failed systemd
+// unit, or a pending reboot.
+func healthFlag(h *model.Host) string {
+	switch {
+	case !h.Status.Live():
+		return padRight("", healthFlagW)
+	case len(h.Cur.FailedUnits) > 0:
+		return styleCrit.Render(padRight(" ✗", healthFlagW))
+	case h.Cur.RebootRequired:
+		return styleWarn.Render(padRight(" ⟳", healthFlagW))
+	default:
+		return padRight("", healthFlagW)
+	}
 }
 
 func statusCell(h *model.Host) string {
@@ -212,6 +233,3 @@ func netCell(h *model.Host) string {
 	return styleText.Render(padRight(
 		fmt.Sprintf("↓%s ↑%s", humanRate(rx), humanRate(tx)), colNetW))
 }
-
-// thresholdsFor exposes the configured limits to the detail renderer.
-func (m Model) thresholdsFor() config.Thresholds { return m.cfg.Thresholds }

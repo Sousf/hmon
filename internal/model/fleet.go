@@ -25,6 +25,13 @@ type NetRate struct {
 	Tx   float64
 }
 
+// DiskRate is a per-device throughput reading in bytes per second.
+type DiskRate struct {
+	Name  string
+	Read  float64
+	Write float64
+}
+
 // Host is everything known about one machine: its latest sample, the derived
 // values that need two samples to compute, and its trend history.
 type Host struct {
@@ -47,6 +54,8 @@ type Host struct {
 	HasCPUPct bool
 	NetRates  []NetRate
 	HasNet    bool
+	DiskRates []DiskRate
+	HasDisk   bool
 
 	CPUHist Ring
 	MemHist Ring
@@ -119,11 +128,13 @@ func (f *Fleet) Apply(name string, s Sample) {
 		elapsed := s.At.Sub(h.prev.At).Seconds()
 		h.CPUPct, h.HasCPUPct = cpuPercent(h.prev, s)
 		h.NetRates, h.HasNet = netRates(h.prev, s, elapsed)
+		h.DiskRates, h.HasDisk = diskRates(h.prev, s, elapsed)
 	} else {
 		// First sample of this host: nothing to diff against yet. Rates fill in
 		// one interval from now.
 		h.HasCPUPct = false
 		h.HasNet = false
+		h.HasDisk = false
 	}
 
 	h.Cur = s
@@ -168,6 +179,7 @@ func (f *Fleet) Fail(name string, kind FailKind, msg string) {
 	// on screen would imply traffic that is not happening.
 	h.HasCPUPct = false
 	h.HasNet = false
+	h.HasDisk = false
 	h.hasPrev = false
 }
 
@@ -222,6 +234,46 @@ func netRates(prev, cur Sample, elapsed float64) ([]NetRate, bool) {
 		})
 	}
 	return out, len(out) > 0
+}
+
+// diskRates derives per-device throughput from two sector-count snapshots,
+// matching devices by name. It carries the same reboot guard as the network
+// and CPU counters: a decrease means the counters restarted, and diffing
+// across that boundary would underflow into a nonsense spike.
+func diskRates(prev, cur Sample, elapsed float64) ([]DiskRate, bool) {
+	if elapsed <= 0 || len(cur.Disks) == 0 {
+		return nil, false
+	}
+	before := make(map[string]Disk, len(prev.Disks))
+	for _, d := range prev.Disks {
+		before[d.Name] = d
+	}
+
+	var out []DiskRate
+	for _, d := range cur.Disks {
+		p, ok := before[d.Name]
+		if !ok {
+			continue // device is new; nothing to diff against yet
+		}
+		if d.SectorsRead < p.SectorsRead || d.SectorsWritten < p.SectorsWritten {
+			continue
+		}
+		out = append(out, DiskRate{
+			Name:  d.Name,
+			Read:  float64(d.SectorsRead-p.SectorsRead) * DiskSectorBytes / elapsed,
+			Write: float64(d.SectorsWritten-p.SectorsWritten) * DiskSectorBytes / elapsed,
+		})
+	}
+	return out, len(out) > 0
+}
+
+// TotalDisk sums throughput across every device.
+func (h *Host) TotalDisk() (read, write float64) {
+	for _, d := range h.DiskRates {
+		read += d.Read
+		write += d.Write
+	}
+	return read, write
 }
 
 // filterFS narrows the reported filesystems to the configured mount points.
