@@ -110,6 +110,11 @@ func Parse(out []byte, at time.Time) (model.Sample, error) {
 		case "rebootrequired":
 			s.RebootRequired = true
 
+		case "containersreported":
+			// Present whenever the containers section actually ran, which is
+			// what distinguishes "this host has none" from "we did not ask".
+			s.HasContainerInfo = true
+
 		case "svc":
 			// load-state, active-state, then the name, which is terminal so it
 			// can contain anything systemd allows.

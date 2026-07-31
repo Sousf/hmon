@@ -143,14 +143,23 @@ fi
 # out to a CLI, so it degrades to nothing when the binary is absent or the
 # user is not in the right group.
 if [ "$WANT_CONTAINERS" -eq 1 ]; then
+  have_runtime=0
   if command -v docker >/dev/null 2>&1; then
+    have_runtime=1
     docker ps -a --no-trunc --format '{{.State}} {{.Names}}' 2>/dev/null \
       | head -n 40 | awk 'NF >= 2 { print "container docker", $0 }'
   fi
   if command -v lxc >/dev/null 2>&1; then
+    have_runtime=1
     lxc list --format csv -c ns 2>/dev/null \
       | head -n 40 | awk -F, 'NF >= 2 { print "container lxc", tolower($2), $1 }'
   fi
+
+  # Emitted even when nothing was found, so the client can tell "this host has
+  # no containers" from "containers were never asked about". Without it, a poll
+  # that skipped this section looks identical to one where every watched
+  # container has vanished.
+  [ "$have_runtime" -eq 1 ] && echo "containersreported 1"
 fi
 
 # --- reboot required -------------------------------------------------------

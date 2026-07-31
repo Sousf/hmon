@@ -169,7 +169,11 @@ func runOnce(fleet *model.Fleet, poller *collect.Poller, asJSON bool) error {
 				results[i].name = h.Name
 				results[i].s, results[i].err = poller.Poll(
 					context.Background(), h.Addr,
-					collect.Opts{Detail: detail, Services: h.Services})
+					collect.Opts{
+						Detail:     detail,
+						Services:   h.Services,
+						Containers: len(h.Containers) > 0,
+					})
 			}(i, h)
 		}
 		wg.Wait()

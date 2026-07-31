@@ -187,6 +187,11 @@ type Sample struct {
 	// be stopped without systemd considering it failed.
 	Services   []Service
 	Containers []Container
+	// HasContainerInfo records that container data was actually collected.
+	// A poll that skipped the section looks identical to one where every
+	// container vanished, and conflating them raises a false alarm on every
+	// host the operator is not currently looking at.
+	HasContainerInfo bool
 
 	// HasCPU and HasMem record whether those readings were present at all, so
 	// a host that omits them renders "n/a" rather than a convincing zero.

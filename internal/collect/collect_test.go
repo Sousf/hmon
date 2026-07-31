@@ -245,3 +245,37 @@ func TestCollectorScriptEmbedded(t *testing.T) {
 		t.Error("embedded collector missing memory collection")
 	}
 }
+
+// TestContainersRequestedWithoutDetail covers the fix for a health signal that
+// was only correct for the selected host: a container watch list must be
+// checked on every host, not just the one whose detail is on screen.
+func TestContainersRequestedWithoutDetail(t *testing.T) {
+	got := strings.Join(Opts{Containers: true}.args(), " ")
+	if !strings.Contains(got, "containers") {
+		t.Errorf("args %q missing containers", got)
+	}
+	// Processes stay detail-only; they are the expensive half.
+	if strings.Contains(got, "procs") {
+		t.Errorf("args %q requested procs without Detail", got)
+	}
+}
+
+func TestParseMarksContainerInfoCollected(t *testing.T) {
+	// The sentinel is what lets the client tell "no containers here" from
+	// "containers were never asked about".
+	with, err := Parse([]byte("v 1\ncontainersreported 1\nend\n"), time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !with.HasContainerInfo {
+		t.Error("HasContainerInfo = false despite the sentinel")
+	}
+
+	without, err := Parse([]byte("v 1\nend\n"), time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if without.HasContainerInfo {
+		t.Error("HasContainerInfo = true without the sentinel")
+	}
+}

@@ -164,7 +164,13 @@ func (m Model) pollAll() tea.Cmd {
 func (m Model) pollOne(h *model.Host, detail bool) tea.Cmd {
 	poller := m.poller
 	name, addr := h.Name, h.Addr
-	opts := collect.Opts{Detail: detail, Services: h.Services}
+	opts := collect.Opts{
+		Detail:   detail,
+		Services: h.Services,
+		// A watch list makes containers a fleet-wide health signal, so every
+		// host with one is asked every poll — not just the selected row.
+		Containers: len(h.Containers) > 0,
+	}
 	return func() tea.Msg {
 		s, err := poller.Poll(context.Background(), addr, opts)
 		if err != nil {

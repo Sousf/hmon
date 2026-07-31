@@ -130,7 +130,15 @@ func (f *Fleet) Apply(name string, s Sample) {
 	h.LastErr = ""
 	h.LastSeen = s.At
 	s.FS = filterFS(s.FS, h.Filesystems)
-	s.Containers = filterContainers(s.Containers, h.Containers)
+	// Reported containers imply the section ran, even from a collector too old
+	// to send the sentinel.
+	if s.HasContainerInfo || len(s.Containers) > 0 {
+		s.Containers = filterContainers(s.Containers, h.Containers)
+	} else {
+		// Not collected this round: carry the last known state forward rather
+		// than reporting everything as gone.
+		s.Containers = h.Cur.Containers
+	}
 
 	if h.hasPrev {
 		elapsed := s.At.Sub(h.prev.At).Seconds()

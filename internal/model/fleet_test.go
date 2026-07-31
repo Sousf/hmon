@@ -368,7 +368,8 @@ func TestContainerWatchListFlagsMissing(t *testing.T) {
 		Containers: []string{"web", "db", "gone"},
 	}})
 	f.Apply("nas", Sample{
-		At: time.Unix(100, 0),
+		At:               time.Unix(100, 0),
+		HasContainerInfo: true,
 		Containers: []Container{
 			{Runtime: "docker", Name: "web", State: "running"},
 			{Runtime: "docker", Name: "db", State: "exited"},
@@ -404,7 +405,8 @@ func TestContainerWatchListFlagsMissing(t *testing.T) {
 func TestEmptyContainerWatchListKeepsAll(t *testing.T) {
 	f := testFleet()
 	f.Apply("nas", Sample{
-		At: time.Unix(100, 0),
+		At:               time.Unix(100, 0),
+		HasContainerInfo: true,
 		Containers: []Container{
 			{Name: "a", State: "running"}, {Name: "b", State: "exited"},
 		},
@@ -443,5 +445,43 @@ func TestJustRebooted(t *testing.T) {
 	// Zero uptime means the host never reported one, not that it just booted.
 	if (Sample{}).JustRebooted() {
 		t.Error("absent uptime should not count as just rebooted")
+	}
+}
+
+// TestUncollectedContainersDoNotReadAsMissing covers a real bug: containers
+// were only collected for the host being viewed, so every other host's poll
+// came back with none — and each watched container was then synthesised as
+// missing, raising a health flag on every row the operator was not looking at.
+func TestUncollectedContainersDoNotReadAsMissing(t *testing.T) {
+	f := NewFleet([]HostRef{{
+		Name: "nas", Addr: "nas", Containers: []string{"web"},
+	}})
+
+	// A poll that did collect containers.
+	f.Apply("nas", Sample{
+		At:               time.Unix(100, 0),
+		HasContainerInfo: true,
+		Containers:       []Container{{Name: "web", State: "running"}},
+	})
+	h, _ := f.Get("nas")
+	if len(h.Cur.StoppedContainers()) != 0 {
+		t.Fatalf("healthy container reported stopped: %+v", h.Cur.Containers)
+	}
+
+	// A poll that did not ask about containers must not conclude they vanished.
+	f.Apply("nas", Sample{At: time.Unix(102, 0)})
+	h, _ = f.Get("nas")
+	if got := h.Cur.StoppedContainers(); len(got) != 0 {
+		t.Errorf("uncollected containers reported as stopped: %+v", got)
+	}
+	if len(h.Cur.Containers) != 1 || !h.Cur.Containers[0].Running() {
+		t.Errorf("last known container state not carried forward: %+v", h.Cur.Containers)
+	}
+
+	// A poll that did ask, and found it gone, must still flag it.
+	f.Apply("nas", Sample{At: time.Unix(104, 0), HasContainerInfo: true})
+	h, _ = f.Get("nas")
+	if got := h.Cur.StoppedContainers(); len(got) != 1 || got[0].State != ContainerMissing {
+		t.Errorf("genuinely missing container not flagged: %+v", got)
 	}
 }

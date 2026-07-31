@@ -895,3 +895,62 @@ func firstProcLine(out string) string {
 	}
 	return ""
 }
+
+// containerAwarePoller mimics the real collector: it only reports containers
+// when they were actually requested, which is what made the original bug
+// invisible to a fake that always returned them.
+type containerAwarePoller struct {
+	requested []bool // opts.Containers per call
+}
+
+func (p *containerAwarePoller) Poll(_ context.Context, _ string, opts collect.Opts) (model.Sample, error) {
+	p.requested = append(p.requested, opts.Containers || opts.Detail)
+	s := model.Sample{At: time.Unix(100, 0), HasCPU: true, HasMem: true, MemTotal: 100, MemAvail: 50}
+	if opts.Containers || opts.Detail {
+		s.HasContainerInfo = true
+		s.Containers = []model.Container{{Runtime: "docker", Name: "minecraft", State: "running"}}
+	}
+	return s, nil
+}
+
+// TestWatchedContainersPolledForEveryHost covers the bug where moving the
+// selection made other hosts show a health flag: containers were only
+// collected for the host being viewed, so every watched container on every
+// other host was synthesised as missing.
+func TestWatchedContainersPolledForEveryHost(t *testing.T) {
+	fleet := model.NewFleet([]model.HostRef{
+		{Name: "alpha", Addr: "alpha", Containers: []string{"minecraft"}},
+		{Name: "beta", Addr: "beta", Containers: []string{"minecraft"}},
+	})
+	cfg, err := config.Parse([]byte("hosts: [x]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &containerAwarePoller{}
+	m := New(cfg, fleet, fake)
+	m.selected = "alpha"
+
+	drain(m.pollAll())
+	if len(fake.requested) != 2 {
+		t.Fatalf("polled %d hosts, want 2", len(fake.requested))
+	}
+	for i, asked := range fake.requested {
+		if !asked {
+			t.Errorf("host %d not asked for containers despite a watch list", i)
+		}
+	}
+
+	// Feed both results through, as the real loop would, and confirm the
+	// unselected host is not flagged.
+	for _, name := range []string{"alpha", "beta"} {
+		s, _ := fake.Poll(context.Background(), name, collect.Opts{Containers: true})
+		m = send(m, sampleMsg{host: name, sample: s})
+	}
+
+	for _, ln := range strings.Split(m.View(), "\n") {
+		if strings.Contains(ln, "beta") && strings.Contains(ln, glyphFailed) {
+			t.Errorf("unselected host flagged despite a running container: %q", ln)
+		}
+	}
+}

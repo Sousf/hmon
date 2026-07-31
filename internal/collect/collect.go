@@ -53,6 +53,11 @@ type Opts struct {
 	// container listings. Both cost real time on the remote side, so they are
 	// only requested for the host whose detail is on screen.
 	Detail bool
+	// Containers requests the container listing on its own. It is needed for
+	// every host with a watch list, not just the one on screen: a health flag
+	// driven by data collected only for the selected host would be wrong for
+	// every other row.
+	Containers bool
 	// Services are unit names to check. One systemctl call covers the whole
 	// list, so this is cheap enough to run for every host on every poll.
 	Services []string
@@ -61,7 +66,10 @@ type Opts struct {
 func (o Opts) args() []string {
 	var args []string
 	if o.Detail {
-		args = append(args, "procs", "containers")
+		args = append(args, "procs")
+	}
+	if o.Detail || o.Containers {
+		args = append(args, "containers")
 	}
 	if len(o.Services) > 0 {
 		args = append(args, "svc="+strings.Join(o.Services, ","))
