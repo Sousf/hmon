@@ -84,7 +84,7 @@ type (
 // Poller is the collection dependency, narrowed to what the UI actually calls
 // so tests can substitute a fake without touching SSH.
 type Poller interface {
-	Poll(ctx context.Context, addr string, withProcs bool) (model.Sample, error)
+	Poll(ctx context.Context, addr string, opts collect.Opts) (model.Sample, error)
 }
 
 // Model is the Bubble Tea model.
@@ -151,20 +151,22 @@ func (m Model) pollAll() tea.Cmd {
 		if m.inFlight[h.Name] {
 			continue
 		}
-		// Processes are only collected for the host whose detail is actually on
-		// screen — either the full detail view, or the split pane on a tall
+		// The expensive sections are only collected for the host whose detail is
+		// actually on screen — the full detail view, or the split pane on a tall
 		// terminal. They cost an extra ~0.5s sampling window remotely, so the
-		// rest of the fleet never pays for them.
-		withProcs := m.showingProcs() && h.Name == m.selected
-		cmds = append(cmds, m.pollOne(h.Name, h.Addr, withProcs))
+		// rest of the fleet never pays for them. Watched services are cheap
+		// enough that every host gets them every poll.
+		cmds = append(cmds, m.pollOne(h, m.showingProcs() && h.Name == m.selected))
 	}
 	return tea.Batch(cmds...)
 }
 
-func (m Model) pollOne(name, addr string, withProcs bool) tea.Cmd {
+func (m Model) pollOne(h *model.Host, detail bool) tea.Cmd {
 	poller := m.poller
+	name, addr := h.Name, h.Addr
+	opts := collect.Opts{Detail: detail, Services: h.Services}
 	return func() tea.Msg {
-		s, err := poller.Poll(context.Background(), addr, withProcs)
+		s, err := poller.Poll(context.Background(), addr, opts)
 		if err != nil {
 			return failMsg{host: name, kind: collect.Classify(err), err: err.Error()}
 		}
@@ -240,7 +242,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// the user wait a full interval to see them.
 			if h, ok := m.fleet.Get(m.selected); ok && !m.inFlight[h.Name] {
 				m.inFlight[h.Name] = true
-				return m, m.pollOne(h.Name, h.Addr, true)
+				return m, m.pollOne(h, true)
 			}
 		}
 		return m, nil

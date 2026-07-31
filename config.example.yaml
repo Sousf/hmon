@@ -6,6 +6,7 @@
 # host aliases, identity files, ports, and ProxyJump all work automatically and
 # stay in one place. In the common case a host is just its name.
 
+
 # How often to poll every host.
 interval: 2s
 
@@ -18,14 +19,27 @@ hosts:
   - proxmox-1
   - pi-dns
 
-  # Use the mapping form when a host needs more than a name:
-  #
-  # - host: media-01.lan          # what ssh connects to
-  #   name: media                 # what the table shows
-  #   filesystems: [/, /mnt/media]  # omit to report every filesystem
+  # Use the mapping form when a host needs more than a name. Any of the three
+  # watch lists below can be overridden per host.
+  # - host: media-01.lan
+  #   name: media
+  #   filesystems: [/, /mnt/media]
+  #   services: [jellyfin]
+  #   containers: [sonarr, radarr]
 
-# Thresholds only choose the colour a value is drawn in. There is deliberately
-# no alerting behind them: this is a dashboard, not a monitoring service.
+# Which mount points to report. Empty means every real filesystem.
+filesystems: []
+
+# systemd units to watch. This catches a service that was stopped rather than
+# one that crashed — systemd does not consider a stopped unit failed, so the
+# failed-unit check alone would show a clean host.
+services: []
+
+# Containers to watch, by name. A watched container that does not exist at all
+# is reported as missing. Empty means show every container.
+containers: []
+
+# Thresholds only choose the colour a value is drawn in.
 thresholds:
   cpu:  {warn: 75, crit: 90}
   mem:  {warn: 80, crit: 92}

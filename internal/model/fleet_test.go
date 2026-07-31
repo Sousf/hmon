@@ -358,3 +358,90 @@ func TestRingWrapsAndPreservesOrder(t *testing.T) {
 		t.Errorf("Last() = %v, %v", last, ok)
 	}
 }
+
+// TestContainerWatchListFlagsMissing covers the case the watch list exists
+// for: a container that should be there and simply is not. Silently omitting
+// it would leave the host looking healthy.
+func TestContainerWatchListFlagsMissing(t *testing.T) {
+	f := NewFleet([]HostRef{{
+		Name: "nas", Addr: "nas",
+		Containers: []string{"web", "db", "gone"},
+	}})
+	f.Apply("nas", Sample{
+		At: time.Unix(100, 0),
+		Containers: []Container{
+			{Runtime: "docker", Name: "web", State: "running"},
+			{Runtime: "docker", Name: "db", State: "exited"},
+			{Runtime: "docker", Name: "unwatched", State: "running"},
+		},
+	})
+
+	h, _ := f.Get("nas")
+	if got, want := len(h.Cur.Containers), 3; got != want {
+		t.Fatalf("containers = %d, want %d (watched only)", got, want)
+	}
+
+	byName := map[string]Container{}
+	for _, c := range h.Cur.Containers {
+		byName[c.Name] = c
+	}
+	if !byName["web"].Running() {
+		t.Error("web should be running")
+	}
+	if byName["gone"].State != ContainerMissing {
+		t.Errorf("gone state = %q, want %q", byName["gone"].State, ContainerMissing)
+	}
+	if _, ok := byName["unwatched"]; ok {
+		t.Error("unwatched container survived the filter")
+	}
+
+	stopped := h.Cur.StoppedContainers()
+	if got, want := len(stopped), 2; got != want {
+		t.Errorf("stopped = %d, want %d (db exited, gone missing)", got, want)
+	}
+}
+
+func TestEmptyContainerWatchListKeepsAll(t *testing.T) {
+	f := testFleet()
+	f.Apply("nas", Sample{
+		At: time.Unix(100, 0),
+		Containers: []Container{
+			{Name: "a", State: "running"}, {Name: "b", State: "exited"},
+		},
+	})
+	h, _ := f.Get("nas")
+	if got, want := len(h.Cur.Containers), 2; got != want {
+		t.Errorf("containers = %d, want %d", got, want)
+	}
+}
+
+// TestStoppedServicesIgnoresMissingUnits keeps a configuration mismatch from
+// reading as an outage: watching "caddy" on a host where caddy runs in a
+// container should not raise a permanent alarm.
+func TestStoppedServicesIgnoresMissingUnits(t *testing.T) {
+	s := Sample{Services: []Service{
+		{Name: "ssh", LoadState: "loaded", ActiveState: "active"},
+		{Name: "postgresql", LoadState: "loaded", ActiveState: "inactive"},
+		{Name: "caddy", LoadState: "not-found", ActiveState: "inactive"},
+	}}
+	stopped := s.StoppedServices()
+	if got, want := len(stopped), 1; got != want {
+		t.Fatalf("stopped = %d, want %d: %+v", got, want, stopped)
+	}
+	if stopped[0].Name != "postgresql" {
+		t.Errorf("stopped = %q, want postgresql", stopped[0].Name)
+	}
+}
+
+func TestJustRebooted(t *testing.T) {
+	if !(Sample{Uptime: 2 * time.Minute}).JustRebooted() {
+		t.Error("2m uptime should count as just rebooted")
+	}
+	if (Sample{Uptime: 26 * 24 * time.Hour}).JustRebooted() {
+		t.Error("26d uptime should not count as just rebooted")
+	}
+	// Zero uptime means the host never reported one, not that it just booted.
+	if (Sample{}).JustRebooted() {
+		t.Error("absent uptime should not count as just rebooted")
+	}
+}

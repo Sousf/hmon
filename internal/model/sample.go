@@ -82,6 +82,42 @@ type Disk struct {
 // DiskSectorBytes is the fixed sector size /proc/diskstats reports in.
 const DiskSectorBytes = 512
 
+// Service is the state of a unit the operator asked to watch.
+//
+// LoadState is carried alongside ActiveState because systemd reports a
+// nonexistent unit and a stopped one identically as "inactive". Without the
+// distinction, watching a service that actually runs in a container would show
+// a permanent alarm nothing could clear.
+type Service struct {
+	Name        string
+	LoadState   string // loaded, not-found, masked, ...
+	ActiveState string // active, inactive, failed, activating, ...
+}
+
+// Running reports whether the unit is up.
+func (s Service) Running() bool { return s.ActiveState == "active" }
+
+// Missing reports that no such unit exists on this host, which is a
+// configuration observation rather than an outage.
+func (s Service) Missing() bool { return s.LoadState == "not-found" }
+
+// ContainerMissing marks a watched container that does not exist on the host
+// at all, as opposed to one that exists and is stopped.
+const ContainerMissing = "missing"
+
+// Container is one docker or lxc container.
+type Container struct {
+	Runtime string // docker or lxc
+	State   string // running, exited, stopped, ...
+	Name    string
+}
+
+// Running reports whether the container is up.
+func (c Container) Running() bool { return c.State == "running" }
+
+// Missing reports that a watched container does not exist on this host.
+func (c Container) Missing() bool { return c.State == ContainerMissing }
+
 // Temp is a single temperature sensor reading in degrees Celsius.
 type Temp struct {
 	Label string
@@ -146,6 +182,12 @@ type Sample struct {
 
 	RebootRequired bool
 
+	// Services are the units the operator asked to watch, and Containers what
+	// docker and lxc report. Both are separate from FailedUnits: a service can
+	// be stopped without systemd considering it failed.
+	Services   []Service
+	Containers []Container
+
 	// HasCPU and HasMem record whether those readings were present at all, so
 	// a host that omits them renders "n/a" rather than a convincing zero.
 	HasCPU bool
@@ -167,6 +209,42 @@ func (s Sample) SwapPct() float64 {
 		return 0
 	}
 	return float64(s.SwapUsed()) / float64(s.SwapTotal) * 100
+}
+
+// RecentBootWindow is how long after boot a host is still described as having
+// just rebooted.
+const RecentBootWindow = 15 * time.Minute
+
+// JustRebooted reports whether this host came up recently. It is derived from
+// uptime rather than from watching for a counter reset, so it is correct even
+// when hmon was not running — or was not watching this host — when the reboot
+// happened.
+func (s Sample) JustRebooted() bool {
+	return s.Uptime > 0 && s.Uptime < RecentBootWindow
+}
+
+// StoppedServices returns watched units that exist but are not running. Units
+// that do not exist on this host are excluded: that is a configuration
+// mismatch, not an outage, and conflating them makes the signal useless.
+func (s Sample) StoppedServices() []Service {
+	var out []Service
+	for _, svc := range s.Services {
+		if !svc.Missing() && !svc.Running() {
+			out = append(out, svc)
+		}
+	}
+	return out
+}
+
+// StoppedContainers returns containers that are not running.
+func (s Sample) StoppedContainers() []Container {
+	var out []Container
+	for _, c := range s.Containers {
+		if !c.Running() {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // LoadPerCore expresses the one-minute load average as a fraction of available

@@ -38,6 +38,8 @@ type Host struct {
 	Name        string // display name
 	Addr        string // what ssh connects to
 	Filesystems []string
+	Services    []string
+	Containers  []string
 
 	Status   Status
 	LastSeen time.Time
@@ -85,8 +87,10 @@ type Fleet struct {
 type HostRef struct {
 	Name string
 	Addr string
-	// Filesystems narrows which mount points to keep. Empty means keep all.
+	// Watch lists for this host. Empty means no filtering.
 	Filesystems []string
+	Services    []string
+	Containers  []string
 }
 
 // NewFleet builds a fleet from configured host references, preserving the
@@ -96,7 +100,10 @@ func NewFleet(hosts []HostRef) *Fleet {
 	for _, h := range hosts {
 		host := &Host{
 			Name: h.Name, Addr: h.Addr,
-			Filesystems: h.Filesystems, Status: StatusUnknown,
+			Filesystems: h.Filesystems,
+			Services:    h.Services,
+			Containers:  h.Containers,
+			Status:      StatusUnknown,
 		}
 		f.Hosts = append(f.Hosts, host)
 		f.index[h.Name] = host
@@ -123,6 +130,7 @@ func (f *Fleet) Apply(name string, s Sample) {
 	h.LastErr = ""
 	h.LastSeen = s.At
 	s.FS = filterFS(s.FS, h.Filesystems)
+	s.Containers = filterContainers(s.Containers, h.Containers)
 
 	if h.hasPrev {
 		elapsed := s.At.Sub(h.prev.At).Seconds()
@@ -292,6 +300,31 @@ func filterFS(in []FS, keep []string) []FS {
 		if want[f.Mount] {
 			out = append(out, f)
 		}
+	}
+	return out
+}
+
+// filterContainers narrows the reported containers to the watch list, and
+// synthesises an entry for any watched container that is not present at all.
+// A container that was deleted, or never created after a rebuild, is exactly
+// the failure this list exists to catch — silently omitting it would leave the
+// display looking healthy.
+func filterContainers(in []Container, keep []string) []Container {
+	if len(keep) == 0 {
+		return in
+	}
+	byName := make(map[string]Container, len(in))
+	for _, c := range in {
+		byName[c.Name] = c
+	}
+
+	out := make([]Container, 0, len(keep))
+	for _, name := range keep {
+		if c, ok := byName[name]; ok {
+			out = append(out, c)
+			continue
+		}
+		out = append(out, Container{Name: name, State: ContainerMissing})
 	}
 	return out
 }

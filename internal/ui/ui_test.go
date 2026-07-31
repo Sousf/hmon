@@ -12,6 +12,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/muesli/termenv"
 
+	"github.com/Sousf/hmon/internal/collect"
 	"github.com/Sousf/hmon/internal/config"
 	"github.com/Sousf/hmon/internal/model"
 )
@@ -25,13 +26,15 @@ func init() {
 // fakePoller stands in for SSH. Its existence is the reason no test here needs
 // a network or a live host.
 type fakePoller struct {
-	sample model.Sample
-	err    error
-	calls  []bool // withProcs for each call
+	sample   model.Sample
+	err      error
+	calls    []bool // opts.Detail for each call
+	services []string
 }
 
-func (f *fakePoller) Poll(_ context.Context, _ string, withProcs bool) (model.Sample, error) {
-	f.calls = append(f.calls, withProcs)
+func (f *fakePoller) Poll(_ context.Context, _ string, opts collect.Opts) (model.Sample, error) {
+	f.calls = append(f.calls, opts.Detail)
+	f.services = opts.Services
 	if f.err != nil {
 		return model.Sample{}, f.err
 	}
@@ -798,7 +801,8 @@ func TestPollErrorBecomesFailMsgWithClassifiedKind(t *testing.T) {
 	m, _ := testModel(t)
 	m.poller = &fakePoller{err: errors.New("connection refused")}
 
-	msg := m.pollOne("alpha", "alpha", false)()
+	h, _ := m.fleet.Get("alpha")
+	msg := m.pollOne(h, false)()
 	fm, ok := msg.(failMsg)
 	if !ok {
 		t.Fatalf("got %T, want failMsg", msg)

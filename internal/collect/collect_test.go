@@ -41,6 +41,26 @@ func TestSSHArgsRequestProcs(t *testing.T) {
 	}
 }
 
+func TestOptsArgs(t *testing.T) {
+	// No options means no extra work on the remote side.
+	if got := (Opts{}).args(); len(got) != 0 {
+		t.Errorf("empty Opts produced args %v, want none", got)
+	}
+
+	got := strings.Join(Opts{Detail: true, Services: []string{"caddy", "postgresql"}}.args(), " ")
+	for _, want := range []string{"procs", "containers", "svc=caddy,postgresql"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("args %q missing %q", got, want)
+		}
+	}
+
+	// Services are cheap, so they are requested without the detail sections.
+	got = strings.Join(Opts{Services: []string{"ssh"}}.args(), " ")
+	if strings.Contains(got, "procs") {
+		t.Errorf("args %q requested procs without Detail", got)
+	}
+}
+
 func TestConnectTimeoutNeverZero(t *testing.T) {
 	// A sub-second timeout truncates to 0, and ConnectTimeout=0 means "no
 	// timeout" to ssh — the opposite of what was asked for.
@@ -162,7 +182,7 @@ func TestPollParsesRunnerOutput(t *testing.T) {
 	fr := &fakeRunner{out: []byte("v 1\nmem 1000 400\nend\n")}
 	p := &Poller{Runner: fr, Timeout: time.Second}
 
-	s, err := p.Poll(context.Background(), "nas", false)
+	s, err := p.Poll(context.Background(), "nas", Opts{})
 	if err != nil {
 		t.Fatalf("Poll() error = %v", err)
 	}
@@ -178,11 +198,12 @@ func TestPollRequestsProcsWhenAsked(t *testing.T) {
 	fr := &fakeRunner{out: []byte("v 1\nend\n")}
 	p := &Poller{Runner: fr, Timeout: time.Second}
 
-	if _, err := p.Poll(context.Background(), "nas", true); err != nil {
+	if _, err := p.Poll(context.Background(), "nas", Opts{Detail: true}); err != nil {
 		t.Fatalf("Poll() error = %v", err)
 	}
-	if len(fr.args) != 1 || fr.args[0] != "procs" {
-		t.Errorf("args = %v, want [procs]", fr.args)
+	joined := strings.Join(fr.args, " ")
+	if !strings.Contains(joined, "procs") || !strings.Contains(joined, "containers") {
+		t.Errorf("args = %v, want procs and containers", fr.args)
 	}
 }
 
@@ -190,7 +211,7 @@ func TestPollPropagatesRunnerError(t *testing.T) {
 	fr := &fakeRunner{err: &AuthError{Detail: "denied"}}
 	p := &Poller{Runner: fr, Timeout: time.Second}
 
-	_, err := p.Poll(context.Background(), "nas", false)
+	_, err := p.Poll(context.Background(), "nas", Opts{})
 	if err == nil {
 		t.Fatal("Poll() succeeded, want error")
 	}

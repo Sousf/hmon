@@ -53,6 +53,20 @@ func (m Model) detailPane(h *model.Host, budget int) []string {
 		return clampLines(head, budget)
 	}
 
+	// Watched services and containers go first: these are the things the
+	// operator explicitly said they care about, so anything wrong with them
+	// must not fall below the fold on a short pane.
+	if line := m.paneServicesLine(h); line != "" {
+		head = append(head, "")
+		head = append(head, "  "+line)
+	}
+	if line := m.paneContainersLine(h); line != "" {
+		if len(head) == 1 {
+			head = append(head, "")
+		}
+		head = append(head, "  "+line)
+	}
+
 	// Failed units go directly under the header: it is the one condition here
 	// that means something is actually broken, so it should not be below the
 	// fold on a short pane.
@@ -149,6 +163,67 @@ func (m Model) loadText(h *model.Host) string {
 	}
 	return styleDim.Render(raw) + "  " +
 		st.Render(fmt.Sprintf("(%.0f%% of %d cores)", ratio*100, h.Cur.Cores))
+}
+
+// paneServicesLine lists the watched units and their state.
+//
+// A unit that does not exist on the host is drawn dim rather than red: that is
+// a configuration mismatch — watching "caddy" when caddy runs in a container,
+// say — and colouring it as an outage would train you to ignore the colour.
+func (m Model) paneServicesLine(h *model.Host) string {
+	if len(h.Cur.Services) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(h.Cur.Services))
+	for _, svc := range h.Cur.Services {
+		name := truncate(svc.Name, 22)
+		switch {
+		case svc.Missing():
+			parts = append(parts, styleDim.Render(name+" n/a"))
+		case svc.Running():
+			parts = append(parts, styleText.Render(name)+" "+styleOK.Render("up"))
+		default:
+			parts = append(parts, styleText.Render(name)+" "+
+				styleCrit.Render(svc.ActiveState))
+		}
+	}
+	return styleHeader.Render(padRight("SVC", 6)) + strings.Join(parts, "   ")
+}
+
+// paneContainersLine lists containers, stopped ones first so a problem is at
+// the front of the line rather than buried after a run of healthy names.
+func (m Model) paneContainersLine(h *model.Host) string {
+	if len(h.Cur.Containers) == 0 {
+		return ""
+	}
+	cs := make([]model.Container, len(h.Cur.Containers))
+	copy(cs, h.Cur.Containers)
+	sort.SliceStable(cs, func(i, j int) bool {
+		return !cs[i].Running() && cs[j].Running()
+	})
+
+	shown := cs
+	if len(shown) > 8 {
+		shown = shown[:8]
+	}
+
+	parts := make([]string, 0, len(shown))
+	for _, c := range shown {
+		name := truncate(c.Name, 22)
+		switch {
+		case c.Missing():
+			parts = append(parts, styleText.Render(name)+" "+styleCrit.Render("missing"))
+		case c.Running():
+			parts = append(parts, styleText.Render(name)+" "+styleOK.Render("up"))
+		default:
+			parts = append(parts, styleText.Render(name)+" "+styleCrit.Render(c.State))
+		}
+	}
+	line := styleHeader.Render(padRight("CTR", 6)) + strings.Join(parts, "   ")
+	if n := len(cs) - len(shown); n > 0 {
+		line += styleDim.Render(fmt.Sprintf("   +%d more", n))
+	}
+	return line
 }
 
 func (m Model) paneSwapLine(h *model.Host) string {

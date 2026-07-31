@@ -47,15 +47,35 @@ hosts:
   - pi-dns
 ```
 
-Aliases, `IdentityFile`, ports, and `ProxyJump` all work. Use the mapping form
-for more control:
+Aliases, `IdentityFile`, ports, and `ProxyJump` all work.
+
+### Watch lists
+
+Three lists say what to keep an eye on. Each is global, and each can be
+overridden per host. All are empty by default, which means no filtering:
+report every filesystem, watch no particular service, show every container.
 
 ```yaml
+filesystems: [/, /mnt/tank]              # mount points to report
+services:    [ssh, docker, postgresql]   # systemd units that should be active
+containers:  [caddy, synapse, postgres]  # containers that should be running
+
 hosts:
+  - nas
   - host: media-01.lan
     name: media
-    filesystems: [/, /mnt/media]   # omit to report every filesystem
+    filesystems: [/, /mnt/media]         # per-host override
+    services: [jellyfin]
+    containers: [sonarr, radarr]
 ```
+
+`services` matters because **failed and not-running are different things**. A
+unit someone stopped, or that never came up after a reboot, is `inactive`
+rather than `failed`, so the failed-unit check alone reports a clean host. A
+watched unit that does not exist is shown as `n/a`, not as an outage — that is
+a config mismatch, not a problem with the machine.
+
+A watched container that is absent entirely is reported as `missing`.
 
 Thresholds (`cpu`, `mem`, `disk`, `temp`) set warn/crit colours only — there is
 no alerting.
@@ -103,6 +123,26 @@ column can express, against the host name:
 |---|---|
 | `✗` | One or more systemd units in the failed state (named in the detail pane) |
 | `⟳` | Reboot required (`/var/run/reboot-required`) |
+
+## Scripting
+
+```sh
+hmon -once           # one poll, one line per host, no TUI
+hmon -once -json     # the same as JSON
+```
+
+This is how hmon stays a dashboard instead of becoming a service. Rather than
+growing notifications and a daemon, run it from cron and pipe it into whatever
+alerting you already have:
+
+```sh
+hmon -once -json | jq -r '.hosts[] | select(.healthy | not) | .name'
+```
+
+Each host carries a `healthy` boolean, false when the host is not up, a watched
+service or container is not running, or a unit has failed. Both modes poll
+twice about a second apart, because CPU and the network and disk rates are
+derived by diffing two samples.
 
 ## Notes
 

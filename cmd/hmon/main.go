@@ -6,17 +6,23 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Sousf/hmon/internal/collect"
 	"github.com/Sousf/hmon/internal/config"
 	"github.com/Sousf/hmon/internal/model"
+	"github.com/Sousf/hmon/internal/report"
 	"github.com/Sousf/hmon/internal/ui"
 )
 
@@ -36,10 +42,25 @@ hosts:
   - proxmox-1
   - pi-dns
 
-  # Use the mapping form when a host needs more than a name:
+  # Use the mapping form when a host needs more than a name. Any of the three
+  # watch lists below can be overridden per host.
   # - host: media-01.lan
   #   name: media
-  #   filesystems: [/, /mnt/media]   # omit to report every filesystem
+  #   filesystems: [/, /mnt/media]
+  #   services: [jellyfin]
+  #   containers: [sonarr, radarr]
+
+# Which mount points to report. Empty means every real filesystem.
+filesystems: []
+
+# systemd units to watch. This catches a service that was stopped rather than
+# one that crashed — systemd does not consider a stopped unit failed, so the
+# failed-unit check alone would show a clean host.
+services: []
+
+# Containers to watch, by name. A watched container that does not exist at all
+# is reported as missing. Empty means show every container.
+containers: []
 
 # Thresholds only choose the colour a value is drawn in.
 thresholds:
@@ -69,6 +90,8 @@ func run() error {
 	cfgPath := flag.String("c", config.DefaultPath(), "path to config file")
 	printExample := flag.Bool("example", false, "print an example config and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	once := flag.Bool("once", false, "poll once, print the fleet, and exit (no TUI)")
+	jsonOut := flag.Bool("json", false, "with -once, print JSON instead of a table")
 	flag.Parse()
 
 	if *showVersion {
@@ -105,11 +128,11 @@ func run() error {
 
 	// Tear down multiplexed SSH masters on exit so quitting does not leave
 	// background ssh processes behind.
-	defer func() {
-		for _, h := range fleet.Hosts {
-			runner.Close(h.Addr)
-		}
-	}()
+	defer closeAll(runner, fleet)
+
+	if *once {
+		return runOnce(fleet, poller, *jsonOut)
+	}
 
 	p := tea.NewProgram(
 		ui.New(cfg, fleet, poller),
@@ -117,4 +140,99 @@ func run() error {
 	)
 	_, err = p.Run()
 	return err
+}
+
+func closeAll(runner *collect.SSHRunner, fleet *model.Fleet) {
+	for _, h := range fleet.Hosts {
+		runner.Close(h.Addr)
+	}
+}
+
+// runOnce polls the fleet without a TUI and prints the result.
+//
+// It polls twice, a second apart, because CPU percentage and the network and
+// disk rates are all derived by diffing two samples — a single poll would
+// report the host but omit exactly the numbers most worth alerting on.
+func runOnce(fleet *model.Fleet, poller *collect.Poller, asJSON bool) error {
+	poll := func(detail bool) {
+		var wg sync.WaitGroup
+		results := make([]struct {
+			name string
+			s    model.Sample
+			err  error
+		}, len(fleet.Hosts))
+
+		for i, h := range fleet.Hosts {
+			wg.Add(1)
+			go func(i int, h *model.Host) {
+				defer wg.Done()
+				results[i].name = h.Name
+				results[i].s, results[i].err = poller.Poll(
+					context.Background(), h.Addr,
+					collect.Opts{Detail: detail, Services: h.Services})
+			}(i, h)
+		}
+		wg.Wait()
+
+		// Applied after the fan-out completes, on this goroutine only, so the
+		// fleet keeps its single-writer property.
+		for _, r := range results {
+			if r.err != nil {
+				fleet.Fail(r.name, collect.Classify(r.err), r.err.Error())
+				continue
+			}
+			fleet.Apply(r.name, r.s)
+		}
+	}
+
+	// The first poll exists only to supply counters for the second to diff
+	// against, so it skips the expensive sections. That matters on a cold run:
+	// with no multiplexed connection yet, a full detail poll can exceed the
+	// timeout, and then the surviving sample has nothing to diff against and
+	// the report silently omits every rate.
+	poll(false)
+	time.Sleep(time.Second)
+	poll(true)
+
+	if asJSON {
+		return report.Write(os.Stdout, report.Build(fleet, time.Now()))
+	}
+	printPlain(os.Stdout, fleet)
+	return nil
+}
+
+// printPlain writes a terse line per host, for eyeballing from a script or a
+// terminal without a TTY.
+func printPlain(w io.Writer, fleet *model.Fleet) {
+	for _, h := range fleet.Hosts {
+		status := h.Status.String()
+		cpu := "—"
+		if h.HasCPUPct {
+			cpu = fmt.Sprintf("%.0f%%", h.CPUPct)
+		}
+		mem := "—"
+		if h.Cur.HasMem {
+			mem = fmt.Sprintf("%.0f%%", h.Cur.MemPct())
+		}
+
+		var notes []string
+		if n := len(h.Cur.FailedUnits); n > 0 {
+			notes = append(notes, fmt.Sprintf("%d failed unit(s)", n))
+		}
+		for _, s := range h.Cur.StoppedServices() {
+			notes = append(notes, s.Name+" "+s.ActiveState)
+		}
+		for _, c := range h.Cur.StoppedContainers() {
+			notes = append(notes, c.Name+" "+c.State)
+		}
+		if h.Cur.RebootRequired {
+			notes = append(notes, "reboot required")
+		}
+
+		line := fmt.Sprintf("%-16s %-8s cpu %-5s mem %-5s", h.Name, status, cpu, mem)
+		if len(notes) > 0 {
+			line += "  " + strings.Join(notes, "; ")
+		}
+		fmt.Fprintln(w, line)
+	}
 }

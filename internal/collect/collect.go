@@ -47,19 +47,34 @@ func New(timeout time.Duration) *Poller {
 	return &Poller{Runner: NewSSHRunner(timeout), Timeout: timeout}
 }
 
-// Poll runs one collection against a host. withProcs requests the extra
-// process listing, which costs a ~0.5s sampling window and is therefore only
-// asked for on the host currently being viewed in detail.
-func (p *Poller) Poll(ctx context.Context, addr string, withProcs bool) (model.Sample, error) {
-	var args []string
-	if withProcs {
-		args = []string{"procs"}
-	}
+// Opts selects which optional sections a poll collects.
+type Opts struct {
+	// Detail turns on the expensive per-host sections — top processes and
+	// container listings. Both cost real time on the remote side, so they are
+	// only requested for the host whose detail is on screen.
+	Detail bool
+	// Services are unit names to check. One systemctl call covers the whole
+	// list, so this is cheap enough to run for every host on every poll.
+	Services []string
+}
 
+func (o Opts) args() []string {
+	var args []string
+	if o.Detail {
+		args = append(args, "procs", "containers")
+	}
+	if len(o.Services) > 0 {
+		args = append(args, "svc="+strings.Join(o.Services, ","))
+	}
+	return args
+}
+
+// Poll runs one collection against a host.
+func (p *Poller) Poll(ctx context.Context, addr string, opts Opts) (model.Sample, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 
-	out, err := p.Runner.Run(ctx, addr, args)
+	out, err := p.Runner.Run(ctx, addr, opts.args())
 	if err != nil {
 		return model.Sample{}, err
 	}

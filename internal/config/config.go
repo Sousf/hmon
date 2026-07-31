@@ -66,8 +66,11 @@ type Thresholds struct {
 type Host struct {
 	Addr        string `yaml:"host"` // what ssh connects to
 	DisplayName string `yaml:"name"` // what the table shows
-	// Filesystems narrows which mount points are reported. Empty means all.
+	// Each of these overrides the global list of the same name for this host.
+	// Empty inherits the global setting.
 	Filesystems []string `yaml:"filesystems"`
+	Services    []string `yaml:"services"`
+	Containers  []string `yaml:"containers"`
 }
 
 // Name is the label shown in the UI, defaulting to the ssh target.
@@ -103,7 +106,7 @@ func (h *Host) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(value.Content); i += 2 {
 			switch value.Content[i].Value {
-			case "host", "name", "filesystems":
+			case "host", "name", "filesystems", "services", "containers":
 			default:
 				return fmt.Errorf("line %d: field %s not found in host entry",
 					value.Content[i].Line, value.Content[i].Value)
@@ -123,10 +126,48 @@ func (h *Host) UnmarshalYAML(value *yaml.Node) error {
 
 // Config is the whole file.
 type Config struct {
-	Interval   time.Duration `yaml:"interval"`
-	Timeout    time.Duration `yaml:"timeout"`
-	Hosts      []Host        `yaml:"hosts"`
-	Thresholds Thresholds    `yaml:"thresholds"`
+	Interval time.Duration `yaml:"interval"`
+	Timeout  time.Duration `yaml:"timeout"`
+	Hosts    []Host        `yaml:"hosts"`
+	// Watch lists applied to every host unless that host overrides them.
+	//
+	// Each is empty by default, and empty means "no filtering": report every
+	// filesystem, watch no specific services, show every container. Defaulting
+	// any of them to a guess would hide things the operator never chose to
+	// hide.
+	//
+	// Services catches a unit that was stopped rather than one that crashed —
+	// systemd does not consider a stopped unit failed, so the failed-unit check
+	// alone would show a clean host.
+	Filesystems []string `yaml:"filesystems"`
+	Services    []string `yaml:"services"`
+	Containers  []string `yaml:"containers"`
+
+	Thresholds Thresholds `yaml:"thresholds"`
+}
+
+// FilesystemsFor returns the mount points to report for a host.
+func (c *Config) FilesystemsFor(h Host) []string {
+	if len(h.Filesystems) > 0 {
+		return h.Filesystems
+	}
+	return c.Filesystems
+}
+
+// ServicesFor returns the units to watch on a host.
+func (c *Config) ServicesFor(h Host) []string {
+	if len(h.Services) > 0 {
+		return h.Services
+	}
+	return c.Services
+}
+
+// ContainersFor returns the containers to watch on a host.
+func (c *Config) ContainersFor(h Host) []string {
+	if len(h.Containers) > 0 {
+		return h.Containers
+	}
+	return c.Containers
 }
 
 // HostRefs converts the configured hosts into the form model.NewFleet wants.
@@ -134,7 +175,11 @@ func (c *Config) HostRefs() []model.HostRef {
 	refs := make([]model.HostRef, 0, len(c.Hosts))
 	for _, h := range c.Hosts {
 		refs = append(refs, model.HostRef{
-			Name: h.Name(), Addr: h.Addr, Filesystems: h.Filesystems,
+			Name:        h.Name(),
+			Addr:        h.Addr,
+			Filesystems: c.FilesystemsFor(h),
+			Services:    c.ServicesFor(h),
+			Containers:  c.ContainersFor(h),
 		})
 	}
 	return refs

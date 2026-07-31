@@ -110,6 +110,26 @@ func Parse(out []byte, at time.Time) (model.Sample, error) {
 		case "rebootrequired":
 			s.RebootRequired = true
 
+		case "svc":
+			// load-state, active-state, then the name, which is terminal so it
+			// can contain anything systemd allows.
+			if len(args) >= 3 {
+				s.Services = append(s.Services, model.Service{
+					LoadState:   args[0],
+					ActiveState: args[1],
+					Name:        strings.Join(args[2:], " "),
+				})
+			}
+
+		case "container":
+			if len(args) >= 3 {
+				s.Containers = append(s.Containers, model.Container{
+					Runtime: args[0],
+					State:   args[1],
+					Name:    strings.Join(args[2:], " "),
+				})
+			}
+
 		case "disk":
 			if len(args) >= 3 {
 				read, err1 := strconv.ParseUint(args[1], 10, 64)

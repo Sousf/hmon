@@ -11,6 +11,7 @@ import (
 // fixed so numbers stay aligned down the screen.
 const (
 	colStatusW = 9
+	colUpW     = 8
 	colCPUW    = 5
 	colSparkW  = 8
 	colMemW    = 13
@@ -50,6 +51,7 @@ func (m Model) renderTable() string {
 	b.WriteString(styleHeader.Render(
 		padRight("HOST", nameW+healthFlagW) + "  " +
 			padRight("STATUS", colStatusW) + "  " +
+			padLeft("UPTIME", colUpW) + "  " +
 			padLeft("CPU", colCPUW) + " " +
 			padRight("", colSparkW) + "  " +
 			padRight("MEM", colMemW) + "  " +
@@ -128,6 +130,7 @@ func (m Model) renderRow(h *model.Host, nameW int) string {
 	if !h.Status.Live() {
 		return cursor + name + "  " +
 			statusCell(h) + "  " +
+			styleDim.Render(padLeft("—", colUpW)+"  ") +
 			styleDim.Render(padLeft("—", colCPUW)+" "+padRight("", colSparkW)+"  "+
 				padRight("—", colMemW)+"  "+
 				padLeft("—", colDiskW)+"  "+
@@ -137,6 +140,7 @@ func (m Model) renderRow(h *model.Host, nameW int) string {
 
 	return cursor + name + "  " +
 		statusCell(h) + "  " +
+		uptimeCell(h) + "  " +
 		m.cpuCell(h) + " " +
 		styleDim.Render(sparkline(h.CPUHist.Values(), colSparkW, 100)) + "  " +
 		m.memCell(h) + "  " +
@@ -163,12 +167,17 @@ const (
 	glyphReboot = "!" // ASCII, so no font can draw it oversized
 )
 
-// healthFlag marks conditions no resource column can express: a failed systemd
-// unit, or a pending reboot.
+// healthFlag marks conditions no resource column can express, worst first: a
+// watched service or container that is not running, a failed unit, or a
+// pending reboot.
 func healthFlag(h *model.Host) string {
 	switch {
 	case !h.Status.Live():
 		return padRight("", healthFlagW)
+	case len(h.Cur.StoppedServices()) > 0 || len(h.Cur.StoppedContainers()) > 0:
+		// Something the operator explicitly said they care about is down, which
+		// outranks a unit that merely failed at some point.
+		return styleCrit.Render(padRight(" "+glyphFailed, healthFlagW))
 	case len(h.Cur.FailedUnits) > 0:
 		return styleCrit.Render(padRight(" "+glyphFailed, healthFlagW))
 	case h.Cur.RebootRequired:
@@ -176,6 +185,19 @@ func healthFlag(h *model.Host) string {
 	default:
 		return padRight("", healthFlagW)
 	}
+}
+
+// uptimeCell shows how long the host has been up, highlighting a machine that
+// only just came back — which is what you want to see after pressing R.
+func uptimeCell(h *model.Host) string {
+	if h.Cur.Uptime <= 0 {
+		return styleDim.Render(padLeft("—", colUpW))
+	}
+	txt := padLeft(humanDuration(h.Cur.Uptime), colUpW)
+	if h.Cur.JustRebooted() {
+		return styleWarn.Render(txt)
+	}
+	return styleDim.Render(txt)
 }
 
 func statusCell(h *model.Host) string {

@@ -12,16 +12,37 @@
 # pure shell invites quoting bugs. Unknown keys are ignored by the parser, so
 # new metrics can be added without breaking older builds.
 #
-# Pass "procs" as the first argument to additionally report top processes.
-# That costs an extra ~0.5s (two /proc samples), so it is only requested for
-# the single host being viewed in detail, never for the whole fleet.
+# Arguments select the optional, more expensive sections:
+#
+#   procs          top processes; costs ~0.5s for two /proc samples, so it is
+#                  only requested for the host being viewed in detail
+#   containers     docker and lxc listings; shells out, so also detail-only
+#   svc=a,b,c      report whether these services are active; one systemctl
+#                  call, cheap enough to run for the whole fleet every poll
 
 set -u
+
+# A non-interactive ssh shell gets a minimal PATH that often omits the sbin
+# directories, which is where lxc and friends live on Debian and Ubuntu. Append
+# rather than replace so a host's own PATH still wins.
+PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/snap/bin"
+export PATH
 
 # Sysfs root, overridable purely so the temperature logic can be exercised
 # against a fixture tree in tests — containers mount /sys read-only, so there is
 # no other way to reach that branch. Always /sys in real use.
 SYSFS="${HMON_SYSFS:-/sys}"
+
+WANT_PROCS=0
+WANT_CONTAINERS=0
+WATCH_SERVICES=""
+for arg in "$@"; do
+  case "$arg" in
+    procs)      WANT_PROCS=1 ;;
+    containers) WANT_CONTAINERS=1 ;;
+    svc=*)      WATCH_SERVICES=$(echo "$arg" | cut -d= -f2- | tr ',' ' ') ;;
+  esac
+done
 
 # Format version. The parser rejects output it does not recognise rather than
 # silently misreading columns.
@@ -90,6 +111,45 @@ if command -v systemctl >/dev/null 2>&1; then
     printf 'failed %s\n' $failed
   else
     echo "failedcount 0"
+  fi
+fi
+
+# --- watched services ------------------------------------------------------
+# "failed" and "not running" are different things: a service someone stopped,
+# or that never came up after a reboot, is inactive rather than failed, and the
+# failed-unit check above sees nothing wrong. These are the units the operator
+# actually cares about, so their state is reported explicitly.
+#
+# LoadState is reported alongside ActiveState because `is-active` alone cannot
+# tell "stopped" from "no such unit" — both come back as inactive. Without the
+# distinction, watching a service that actually runs in a container (or is
+# named differently, like lxd's snap.lxd.daemon) would show a permanent red
+# alarm that no amount of starting things could clear.
+#
+# One systemctl call handles the whole list. Its output is a blank-line
+# separated block per unit, which awk reads in paragraph mode: field 1 is
+# LoadState, field 2 ActiveState, paired back to names by record number.
+if [ -n "$WATCH_SERVICES" ] && command -v systemctl >/dev/null 2>&1; then
+  # shellcheck disable=SC2086
+  systemctl show -p LoadState -p ActiveState --value $WATCH_SERVICES 2>/dev/null \
+    | awk -v names="$WATCH_SERVICES" '
+        BEGIN { RS = ""; n = split(names, arr, " ") }
+        NR <= n { print "svc", $1, $2, arr[NR] }'
+fi
+
+# --- containers ------------------------------------------------------------
+# Stopped containers are included deliberately: one that should be running and
+# is not is exactly what this is for. Unlike everything else here this shells
+# out to a CLI, so it degrades to nothing when the binary is absent or the
+# user is not in the right group.
+if [ "$WANT_CONTAINERS" -eq 1 ]; then
+  if command -v docker >/dev/null 2>&1; then
+    docker ps -a --no-trunc --format '{{.State}} {{.Names}}' 2>/dev/null \
+      | head -n 40 | awk 'NF >= 2 { print "container docker", $0 }'
+  fi
+  if command -v lxc >/dev/null 2>&1; then
+    lxc list --format csv -c ns 2>/dev/null \
+      | head -n 40 | awk -F, 'NF >= 2 { print "container lxc", tolower($2), $1 }'
   fi
 fi
 
@@ -207,7 +267,7 @@ done
 # actively misleading for monitoring: something that pegged a core an hour ago
 # still looks busy. Instead, sample /proc/<pid>/stat twice and diff utime+stime
 # to get genuine instantaneous usage.
-if [ "${1:-}" = "procs" ]; then
+if [ "$WANT_PROCS" -eq 1 ]; then
   # One awk over every stat file at once. Forking awk per process instead —
   # the obvious way to write this — costs several hundred forks per snapshot on
   # a host running containers, which stretches the sampling window to over a

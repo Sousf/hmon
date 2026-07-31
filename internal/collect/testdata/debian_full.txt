@@ -1,18 +1,18 @@
 v 1
-uptime 312.35
-cpu 173 0 99 311799 70 0 60 0
-mem 8024472 7508856
+uptime 0.98
+cpu 38 0 41 842 41 0 9 0
+mem 8024472 7509504
 swap 1048572 1048572
-load 0.30 0.11 0.03
+load 0.00 0.00 0.00
 cores 10
-disk vda 26474 15512
-disk vdb 486120 0
-fs /fakesys 971298980 260662652 710636328
-fs /etc/hosts 954925484 10764588 895579624
-net eth0 302 42
+disk vda 23690 6752
+disk vdb 480952 0
+fs /fakesys 971298980 260779972 710519008
+fs /etc/hosts 954925484 10764592 895579620
+net eth0 282 42
 temp 52.0 Package id 0
 temp 41.5 nvme
 temp 67.8 cpu-thermal
-proc 1 0.0 1220 sh
-proc 1 0.0 1220 sh
+proc 1 0.0 1120 sh
+proc 1 0.0 1120 sh
 end

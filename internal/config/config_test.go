@@ -198,3 +198,66 @@ func TestHostRefsCarryFilesystems(t *testing.T) {
 		t.Errorf("filesystems = %d, want %d", got, want)
 	}
 }
+
+// TestWatchListsGlobalAndPerHost covers the three configurable lists. Each is
+// global by default with a per-host override, so a fleet of near-identical
+// machines is configured once and the odd one out is still expressible.
+func TestWatchListsGlobalAndPerHost(t *testing.T) {
+	cfg, err := Parse([]byte(`
+filesystems: [/, /boot]
+services: [ssh, docker]
+containers: [web, db]
+
+hosts:
+  - plain
+  - host: special
+    filesystems: [/mnt/tank]
+    services: [nginx]
+    containers: [cache]
+`))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	plain, special := cfg.Hosts[0], cfg.Hosts[1]
+
+	if got, want := len(cfg.FilesystemsFor(plain)), 2; got != want {
+		t.Errorf("plain filesystems = %d, want %d (should inherit global)", got, want)
+	}
+	if got := cfg.FilesystemsFor(special); len(got) != 1 || got[0] != "/mnt/tank" {
+		t.Errorf("special filesystems = %v, want [/mnt/tank]", got)
+	}
+
+	if got := cfg.ServicesFor(plain); len(got) != 2 {
+		t.Errorf("plain services = %v, want the global pair", got)
+	}
+	if got := cfg.ServicesFor(special); len(got) != 1 || got[0] != "nginx" {
+		t.Errorf("special services = %v, want [nginx]", got)
+	}
+
+	if got := cfg.ContainersFor(plain); len(got) != 2 {
+		t.Errorf("plain containers = %v, want the global pair", got)
+	}
+	if got := cfg.ContainersFor(special); len(got) != 1 || got[0] != "cache" {
+		t.Errorf("special containers = %v, want [cache]", got)
+	}
+
+	// All three must reach the fleet.
+	refs := cfg.HostRefs()
+	if len(refs[1].Services) != 1 || len(refs[1].Containers) != 1 || len(refs[1].Filesystems) != 1 {
+		t.Errorf("per-host overrides did not reach HostRef: %+v", refs[1])
+	}
+}
+
+func TestWatchListsDefaultToEmpty(t *testing.T) {
+	// Empty means no filtering. Defaulting any of these to a guess would hide
+	// filesystems or containers the operator never chose to hide.
+	cfg, err := Parse([]byte("hosts: [a]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.Hosts[0]
+	if len(cfg.FilesystemsFor(h))+len(cfg.ServicesFor(h))+len(cfg.ContainersFor(h)) != 0 {
+		t.Error("watch lists are non-empty by default, want empty")
+	}
+}
