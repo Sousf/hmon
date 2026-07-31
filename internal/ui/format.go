@@ -5,6 +5,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // sparkChars run from lowest to highest.
@@ -131,25 +133,29 @@ func humanDuration(d time.Duration) string {
 	}
 }
 
-// truncate shortens s to width, marking elision with an ellipsis so a cut
-// command name is visibly cut rather than silently wrong.
+// Widths below are measured in display columns, not runes. A rune count is
+// wrong for anything the terminal draws in two cells — CJK text in a process
+// command line, or an emoji in a hostname — and one miscounted cell shifts
+// every column to its right for that row only.
+
+// truncate shortens s to width display columns, marking elision with an
+// ellipsis so a cut command name is visibly cut rather than silently wrong.
 func truncate(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= width {
+	if runewidth.StringWidth(s) <= width {
 		return s
 	}
 	if width == 1 {
 		return "…"
 	}
-	return string(r[:width-1]) + "…"
+	return runewidth.Truncate(s, width, "…")
 }
 
-// padRight left-aligns s in a field of the given width.
+// padRight left-aligns s in a field of the given display width.
 func padRight(s string, width int) string {
-	n := width - len([]rune(s))
+	n := width - runewidth.StringWidth(s)
 	if n <= 0 {
 		return s
 	}
@@ -158,7 +164,7 @@ func padRight(s string, width int) string {
 
 // padLeft right-aligns s, which is what numeric columns want so digits line up.
 func padLeft(s string, width int) string {
-	n := width - len([]rune(s))
+	n := width - runewidth.StringWidth(s)
 	if n <= 0 {
 		return s
 	}

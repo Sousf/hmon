@@ -32,7 +32,7 @@ func (m Model) renderConfirm() string {
 	b.WriteString("\n\n")
 
 	if host.Cur.RebootRequired {
-		b.WriteString(styleWarn.Render("⟳ this host reports a reboot is required"))
+		b.WriteString(styleWarn.Render(glyphReboot + " this host reports a reboot is required"))
 		b.WriteString("\n\n")
 	}
 	if !host.Status.Live() {

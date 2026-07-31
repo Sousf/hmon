@@ -58,11 +58,11 @@ func (m Model) detailPane(h *model.Host, budget int) []string {
 	// fold on a short pane.
 	if len(h.Cur.FailedUnits) > 0 {
 		head = append(head, "")
-		head = append(head, "  "+styleCrit.Render("✗ failed: ")+
+		head = append(head, "  "+styleCrit.Render(glyphFailed+" failed: ")+
 			styleText.Render(truncate(strings.Join(h.Cur.FailedUnits, ", "), maxInt(20, m.width-16))))
 	}
 	if h.Cur.RebootRequired {
-		head = append(head, "  "+styleWarn.Render("⟳ reboot required"))
+		head = append(head, "  "+styleWarn.Render(glyphReboot+" reboot required"))
 	}
 
 	head = append(head, "")

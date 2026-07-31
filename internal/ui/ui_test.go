@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 	"github.com/muesli/termenv"
 
 	"github.com/Sousf/hmon/internal/config"
@@ -344,7 +345,7 @@ func TestRebootRequiredFlagged(t *testing.T) {
 	s.RebootRequired = true
 	fleet.Apply("alpha", s)
 
-	if !strings.Contains(m.View(), "⟳") {
+	if !strings.Contains(m.View(), glyphReboot) {
 		t.Error("reboot-required host not flagged in table")
 	}
 }
@@ -587,6 +588,84 @@ func TestProcSortFallsBackToMemory(t *testing.T) {
 	got = sortedProcs(procs, procByCPU)
 	if got[0].Command != "python" {
 		t.Errorf("busy ordering put %s first, want python", got[0].Command)
+	}
+}
+
+// TestPaddingMeasuresDisplayColumns covers text the terminal draws wider than
+// one cell per rune. Counting runes there shifts every column to the right of
+// it for that row only, which is the worst kind of layout bug — it looks fine
+// until one host has a CJK process name.
+func TestPaddingMeasuresDisplayColumns(t *testing.T) {
+	wide := "日本語" // three runes, six display columns
+
+	if got := padRight(wide, 10); runewidth.StringWidth(got) != 10 {
+		t.Errorf("padRight(%q, 10) has width %d, want 10", wide, runewidth.StringWidth(got))
+	}
+	if got := padLeft(wide, 10); runewidth.StringWidth(got) != 10 {
+		t.Errorf("padLeft(%q, 10) has width %d, want 10", wide, runewidth.StringWidth(got))
+	}
+	// Already at or over the width: leave it alone rather than padding to a
+	// rune count that would overflow the column.
+	if got := padRight(wide, 4); got != wide {
+		t.Errorf("padRight(%q, 4) = %q, want unchanged", wide, got)
+	}
+	if got := truncate(wide, 4); runewidth.StringWidth(got) > 4 {
+		t.Errorf("truncate(%q, 4) = %q, width %d, want at most 4",
+			wide, got, runewidth.StringWidth(got))
+	}
+}
+
+// TestHealthGlyphsAreSingleColumn guards the fix for a real rendering bug: ⟳
+// (U+27F3) measures one column and the terminal advances one cell, but many
+// monospace fonts draw it wider than its cell and it bleeds over the following
+// character. No width calculation can catch that, so the defence is to keep
+// these markers to characters that are safe in any font.
+func TestHealthGlyphsAreSingleColumn(t *testing.T) {
+	for _, g := range []string{glyphFailed, glyphReboot} {
+		if got := runewidth.StringWidth(g); got != 1 {
+			t.Errorf("glyph %q measures %d columns, want 1", g, got)
+		}
+	}
+	// The reboot marker in particular must stay ASCII: it is the one that was
+	// previously over-drawn, and ASCII cannot be.
+	for _, r := range glyphReboot {
+		if r > 127 {
+			t.Errorf("reboot glyph %q is not ASCII; a font may draw it oversized", glyphReboot)
+		}
+	}
+}
+
+// TestFlaggedAndUnflaggedRowsAlign checks that a host carrying a health marker
+// keeps its later columns lined up with a host that has none.
+func TestFlaggedAndUnflaggedRowsAlign(t *testing.T) {
+	m, fleet := testModel(t, "alpha", "beta", "gamma")
+	flagged := Sample(t, 10)
+	flagged.FailedUnits = []string{"x.service"}
+	flagged.HasUnitInfo = true
+	fleet.Apply("alpha", flagged)
+
+	rebooting := Sample(t, 10)
+	rebooting.RebootRequired = true
+	fleet.Apply("beta", rebooting)
+
+	fleet.Apply("gamma", Sample(t, 10)) // no marker
+
+	var cols []int
+	for _, ln := range strings.Split(m.View(), "\n") {
+		for _, name := range []string{"alpha", "beta", "gamma"} {
+			if strings.Contains(ln, name) && strings.Contains(ln, "up") {
+				cols = append(cols, colOf(ln, "●"))
+			}
+		}
+	}
+	if len(cols) != 3 {
+		t.Fatalf("found %d host rows, want 3", len(cols))
+	}
+	for i, c := range cols {
+		if c != cols[0] {
+			t.Errorf("row %d status column at %d, want %d — health marker broke alignment",
+				i, c, cols[0])
+		}
 	}
 }
 

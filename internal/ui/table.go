@@ -149,6 +149,20 @@ func (m Model) renderRow(h *model.Host, nameW int) string {
 // right stays aligned whether or not a host has something to report.
 const healthFlagW = 2
 
+// Health markers.
+//
+// These are deliberately conservative. Unicode and go-runewidth both consider
+// glyphs like ⟳ (U+27F3) one column wide, and the terminal advances the cursor
+// accordingly — but plenty of monospace fonts draw them wider than their cell,
+// which bleeds over the following character. No width calculation can fix
+// that, because nothing is miscounted; the glyph is simply drawn too big. The
+// only reliable defence is to stick to characters that are safe in any
+// monospace font.
+const (
+	glyphFailed = "✗" // proven to render correctly at one cell
+	glyphReboot = "!" // ASCII, so no font can draw it oversized
+)
+
 // healthFlag marks conditions no resource column can express: a failed systemd
 // unit, or a pending reboot.
 func healthFlag(h *model.Host) string {
@@ -156,9 +170,9 @@ func healthFlag(h *model.Host) string {
 	case !h.Status.Live():
 		return padRight("", healthFlagW)
 	case len(h.Cur.FailedUnits) > 0:
-		return styleCrit.Render(padRight(" ✗", healthFlagW))
+		return styleCrit.Render(padRight(" "+glyphFailed, healthFlagW))
 	case h.Cur.RebootRequired:
-		return styleWarn.Render(padRight(" ⟳", healthFlagW))
+		return styleWarn.Render(padRight(" "+glyphReboot, healthFlagW))
 	default:
 		return padRight("", healthFlagW)
 	}
