@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        run: go test -race ./...
+
+      # The collector is shell, not Go, so it needs its own checks. The runner
+      # is Linux, which means — unlike a macOS dev machine — it can actually
+      # execute the script against a real /proc and /sys.
+      - name: shell syntax
+        run: sh -n internal/collect/collector.sh
+
+      - name: collector runs against a real kernel
+        run: |
+          out=$(sh internal/collect/collector.sh procs)
+          echo "$out" | head -20
+          for key in "v 1" "cpu " "mem " "fs " "net " "proc " "end"; do
+            echo "$out" | grep -q "^$key" || { echo "collector output missing: $key"; exit 1; }
+          done
+
+      - name: collector runs under busybox ash
+        # Alpine's busybox awk and Debian's mawk differ in ways that have
+        # already caused real bugs, so exercise both.
+        run: |
+          docker run --rm -i -v "$PWD:/src:ro" alpine:3.20 \
+            sh -c 'sh /src/internal/collect/collector.sh | grep -q "^end"'

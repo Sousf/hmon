@@ -1,0 +1,14 @@
+v 1
+uptime 0.93
+cpu 37 0 43 801 38 0 6 0
+mem 8024472 7515724
+load 0.00 0.00 0.00
+fs /fakesys 971298980 260197100 711101880
+fs /etc/hosts 954925484 10764620 895579592
+net eth0 282 42
+temp 52.0 Package id 0
+temp 41.5 nvme
+temp 67.8 cpu-thermal
+proc 1 0.0 1116 sh
+proc 1 0.0 1116 sh
+end

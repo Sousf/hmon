@@ -1,0 +1,33 @@
+# Example configuration for hmon, the homelab fleet monitor.
+#
+# Copy to ~/.config/hmon/config.yaml and edit.
+#
+# Connection details are NOT repeated here. They come from ~/.ssh/config, so
+# host aliases, identity files, ports, and ProxyJump all work automatically and
+# stay in one place. In the common case a host is just its name.
+
+# How often to poll every host.
+interval: 2s
+
+# Per-host deadline. A host slower than the interval simply updates less
+# often; it is not marked down for being slow.
+timeout: 5s
+
+hosts:
+  - nas
+  - proxmox-1
+  - pi-dns
+
+  # Use the mapping form when a host needs more than a name:
+  #
+  # - host: media-01.lan          # what ssh connects to
+  #   name: media                 # what the table shows
+  #   filesystems: [/, /mnt/media]  # omit to report every filesystem
+
+# Thresholds only choose the colour a value is drawn in. There is deliberately
+# no alerting behind them: this is a dashboard, not a monitoring service.
+thresholds:
+  cpu:  {warn: 75, crit: 90}
+  mem:  {warn: 80, crit: 92}
+  disk: {warn: 80, crit: 90}
+  temp: {warn: 65, crit: 80}

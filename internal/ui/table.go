@@ -1,0 +1,186 @@
+package ui
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/Sousf/hmon/internal/config"
+	"github.com/Sousf/hmon/internal/model"
+)
+
+// Column widths. The host column flexes with the longest name; the rest are
+// fixed so numbers stay aligned down the screen.
+const (
+	colStatusW = 9
+	colCPUW    = 5
+	colSparkW  = 8
+	colMemW    = 13
+	colDiskW   = 6
+	colTempW   = 6
+	colNetW    = 17
+)
+
+func (m Model) renderTable() string {
+	hosts := m.sortedHosts()
+
+	nameW := 4
+	for _, h := range hosts {
+		if n := len([]rune(h.Name)); n > nameW {
+			nameW = n
+		}
+	}
+
+	var b strings.Builder
+
+	// Title bar.
+	up := 0
+	for _, h := range hosts {
+		if h.Status == model.StatusUp {
+			up++
+		}
+	}
+	title := styleTitle.Render("hmon")
+	summary := styleDim.Render(fmt.Sprintf("%d/%d up · %s",
+		up, len(hosts), m.now.Format("15:04:05")))
+	b.WriteString(title + "  " + summary + "\n\n")
+
+	// Header row. The leading pad matches the width of the selection cursor
+	// each data row carries, without which every column header sits two
+	// characters left of its values.
+	b.WriteString("  ")
+	b.WriteString(styleHeader.Render(
+		padRight("HOST", nameW) + "  " +
+			padRight("STATUS", colStatusW) + "  " +
+			padLeft("CPU", colCPUW) + " " +
+			padRight("", colSparkW) + "  " +
+			padRight("MEM", colMemW) + "  " +
+			padLeft("DISK", colDiskW) + "  " +
+			padLeft("TEMP", colTempW) + "  " +
+			padRight("NET ↓ ↑", colNetW)))
+	b.WriteString("\n")
+
+	for _, h := range hosts {
+		b.WriteString(m.renderRow(h, nameW))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styleHelp.Render(fmt.Sprintf(
+		"↑↓ move · enter detail · s sort (%s%s) · i invert · r refresh · q quit",
+		m.sort, arrow(m.sortDesc))))
+	return b.String()
+}
+
+func arrow(desc bool) string {
+	if desc {
+		return "↓"
+	}
+	return "↑"
+}
+
+func (m Model) renderRow(h *model.Host, nameW int) string {
+	selected := h.Name == m.selected
+
+	cursor := "  "
+	name := padRight(truncate(h.Name, nameW), nameW)
+	if selected {
+		cursor = styleSelected.Render("▸ ")
+		name = styleSelected.Render(name)
+	} else {
+		name = styleText.Render(name)
+	}
+
+	// A host that is down has no current readings; showing stale numbers would
+	// imply the machine is still reporting them.
+	if !h.Status.Live() {
+		return cursor + name + "  " +
+			statusCell(h) + "  " +
+			styleDim.Render(padLeft("—", colCPUW)+" "+padRight("", colSparkW)+"  "+
+				padRight("—", colMemW)+"  "+
+				padLeft("—", colDiskW)+"  "+
+				padLeft("—", colTempW)+"  "+
+				padRight("—", colNetW))
+	}
+
+	return cursor + name + "  " +
+		statusCell(h) + "  " +
+		m.cpuCell(h) + " " +
+		styleDim.Render(sparkline(h.CPUHist.Values(), colSparkW, 100)) + "  " +
+		m.memCell(h) + "  " +
+		m.diskCell(h) + "  " +
+		m.tempCell(h) + "  " +
+		netCell(h)
+}
+
+func statusCell(h *model.Host) string {
+	var dot, label string
+	var st = styleDim
+
+	switch h.Status {
+	case model.StatusUp:
+		dot, label, st = "●", "up", styleOK
+	case model.StatusStale:
+		dot, label, st = "◐", "stale", styleWarn
+	case model.StatusDown:
+		dot, label, st = "○", "down", styleDim
+	case model.StatusAuth:
+		// Distinct from down on purpose: this one is a local configuration
+		// problem, and retrying will never clear it.
+		dot, label, st = "✗", "auth", styleCrit
+	case model.StatusBadOutput:
+		dot, label, st = "⚠", "bad out", styleCrit
+	default:
+		dot, label = "·", "—"
+	}
+	return st.Render(padRight(dot+" "+label, colStatusW))
+}
+
+func (m Model) cpuCell(h *model.Host) string {
+	if !h.HasCPUPct {
+		// Needs two samples to exist; blank rather than a convincing zero.
+		return styleDim.Render(padLeft("—", colCPUW))
+	}
+	txt := fmt.Sprintf("%.0f%%", h.CPUPct)
+	return levelStyle(m.cfg.Thresholds.CPU.Classify(h.CPUPct)).Render(padLeft(txt, colCPUW))
+}
+
+func (m Model) memCell(h *model.Host) string {
+	if !h.Cur.HasMem {
+		return styleDim.Render(padRight("—", colMemW))
+	}
+	txt := fmt.Sprintf("%s/%s", humanBytes(h.Cur.MemUsed()), humanBytes(h.Cur.MemTotal))
+	return levelStyle(m.cfg.Thresholds.Mem.Classify(h.Cur.MemPct())).Render(padRight(txt, colMemW))
+}
+
+func (m Model) diskCell(h *model.Host) string {
+	fs, ok := h.Cur.RootFS()
+	if !ok {
+		return styleDim.Render(padLeft("—", colDiskW))
+	}
+	pct := fs.UsedPct()
+	return levelStyle(m.cfg.Thresholds.Disk.Classify(pct)).
+		Render(padLeft(fmt.Sprintf("%.0f%%", pct), colDiskW))
+}
+
+func (m Model) tempCell(h *model.Host) string {
+	t, ok := h.Cur.MaxTemp()
+	if !ok {
+		// No exposed sensors is normal on plenty of hardware, so this is "not
+		// available", not a failure.
+		return styleDim.Render(padLeft("n/a", colTempW))
+	}
+	return levelStyle(m.cfg.Thresholds.Temp.Classify(t.C)).
+		Render(padLeft(fmt.Sprintf("%.0f°C", t.C), colTempW))
+}
+
+func netCell(h *model.Host) string {
+	if !h.HasNet {
+		return styleDim.Render(padRight("—", colNetW))
+	}
+	rx, tx := h.TotalNet()
+	return styleText.Render(padRight(
+		fmt.Sprintf("↓%s ↑%s", humanRate(rx), humanRate(tx)), colNetW))
+}
+
+// thresholdsFor exposes the configured limits to the detail renderer.
+func (m Model) thresholdsFor() config.Thresholds { return m.cfg.Thresholds }

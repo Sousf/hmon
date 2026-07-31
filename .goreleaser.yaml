@@ -1,0 +1,97 @@
+# GoReleaser builds hmon for macOS and Linux on every tag, publishes a GitHub
+# release, and updates the Homebrew formula in Sousf/homebrew-tap.
+#
+# Release process is: git tag vX.Y.Z && git push --tags
+version: 2
+
+project_name: hmon
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: hmon
+    main: ./cmd/hmon
+    binary: hmon
+    env:
+      # Pure Go with no cgo, which is what makes cross-compiling to four
+      # targets from one runner free.
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: hmon
+    ids: [hmon]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - config.example.yaml
+
+checksum:
+  name_template: checksums.txt
+
+# A cask, not a formula: Homebrew now expects prebuilt binaries to ship as
+# casks, and GoReleaser has deprecated the `brews` block accordingly. The
+# tradeoff is that casks are macOS-only — Linux users install with `go install`
+# or the release tarball, both documented in the README.
+#
+# The cask also clears the macOS quarantine attribute, without which an
+# unsigned binary downloaded from GitHub is blocked by Gatekeeper on first run.
+homebrew_casks:
+  - name: hmon
+    ids: [hmon]
+    binaries: [hmon]
+    repository:
+      owner: Sousf
+      name: homebrew-tap
+      # The workflow's built-in GITHUB_TOKEN cannot push to a different repo,
+      # so updating the tap needs a PAT with repo scope.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/Sousf/hmon
+    description: Terminal dashboard for a small fleet of Linux machines over SSH
+    license: MIT
+    commit_author:
+      name: goreleaser
+      email: noreply@github.com
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/hmon"]
+          end
+    caveats: |
+      hmon reads ~/.config/hmon/config.yaml. Create a starter one with:
+
+        mkdir -p ~/.config/hmon
+        hmon -example > ~/.config/hmon/config.yaml
+
+      Connection details come from ~/.ssh/config, so each host is usually
+      just its alias.
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  footer: |
+    ## Install
+
+    ```sh
+    brew install Sousf/tap/hmon
+    ```

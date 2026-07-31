@@ -1,0 +1,20 @@
+# Built binaries
+/hmon
+/monitor
+/dist/
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local assistant/design notes, kept out of the published repo
+CLAUDE.md
+AGENTS.md
+.claude/
+docs/superpowers/
