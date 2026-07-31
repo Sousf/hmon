@@ -23,12 +23,25 @@ jobs:
           go-version: stable
           cache: true
 
+      # The cask is pushed to the tap over SSH using a deploy key scoped to
+      # that one repository. GoReleaser wants a path to the key, not its
+      # contents, so write it out with restrictive permissions first.
+      - name: Prepare tap deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          key_path="$RUNNER_TEMP/tap_deploy_key"
+          install -m 600 /dev/null "$key_path"
+          printf '%s\n' "$DEPLOY_KEY" > "$key_path"
+          echo "HOMEBREW_TAP_DEPLOY_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+
+          # Pin GitHub's host key rather than disabling host verification.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # A separate PAT: the built-in GITHUB_TOKEN is scoped to this repo
-          # only and cannot push the cask to the tap repository.
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

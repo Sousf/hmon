@@ -54,9 +54,14 @@ homebrew_casks:
     repository:
       owner: Sousf
       name: homebrew-tap
-      # The workflow's built-in GITHUB_TOKEN cannot push to a different repo,
-      # so updating the tap needs a PAT with repo scope.
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      branch: main
+      # Pushed over SSH with a deploy key rather than a token. The workflow's
+      # built-in GITHUB_TOKEN cannot reach another repo, and a classic PAT
+      # would grant read/write to every repo on the account. This key can
+      # write to homebrew-tap and nothing else, and carries no API access.
+      git:
+        url: git@github.com:Sousf/homebrew-tap.git
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY_PATH }}"
     directory: Casks
     homepage: https://github.com/Sousf/hmon
     description: Terminal dashboard for a small fleet of Linux machines over SSH
