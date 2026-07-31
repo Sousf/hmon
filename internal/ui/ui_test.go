@@ -296,9 +296,16 @@ func TestRenderTableShowsHostsAndStatus(t *testing.T) {
 	fleet.Fail("gamma", model.FailAuth, "permission denied")
 
 	out := m.View()
-	for _, want := range []string{"alpha", "beta", "gamma", "up", "down", "auth"} {
+	// A healthy host is a bare green dot with no word; the states that need
+	// explaining are the only ones carrying text.
+	for _, want := range []string{"alpha", "beta", "gamma", "●", "down", "auth"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table output missing %q\n---\n%s", want, out)
+		}
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "alpha") && strings.Contains(ln, " up") {
+			t.Errorf("healthy host still labelled: %q", ln)
 		}
 	}
 	// A down host must not display stale readings as if current.
@@ -656,7 +663,7 @@ func TestFlaggedAndUnflaggedRowsAlign(t *testing.T) {
 	var cols []int
 	for _, ln := range strings.Split(m.View(), "\n") {
 		for _, name := range []string{"alpha", "beta", "gamma"} {
-			if strings.Contains(ln, name) && strings.Contains(ln, "up") {
+			if strings.Contains(ln, name) && strings.Contains(ln, "●") {
 				cols = append(cols, colOf(ln, "●"))
 			}
 		}

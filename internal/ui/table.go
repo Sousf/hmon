@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/Sousf/hmon/internal/model"
 )
 
@@ -200,13 +202,46 @@ func uptimeCell(h *model.Host) string {
 	return styleDim.Render(txt)
 }
 
+// statusCell renders the status for the table, padded to a fixed column.
 func statusCell(h *model.Host) string {
-	var dot, label string
-	var st = styleDim
+	// The column keeps its full width even when only a dot is drawn, so nothing
+	// to its right shifts when a host changes state. A table whose columns move
+	// the moment something goes wrong is hard to read at exactly the moment it
+	// matters.
+	return statusStyle(h).Render(padRight(statusText(h), colStatusW))
+}
+
+// statusInline renders the same status without column padding, for the detail
+// views where there is no column to line up with.
+func statusInline(h *model.Host) string {
+	return statusStyle(h).Render(statusText(h))
+}
+
+func statusText(h *model.Host) string {
+	dot, label, _ := statusParts(h)
+	if label == "" {
+		return dot
+	}
+	return dot + " " + label
+}
+
+func statusStyle(h *model.Host) lipgloss.Style {
+	_, _, st := statusParts(h)
+	return st
+}
+
+func statusParts(h *model.Host) (dot, label string, st lipgloss.Style) {
+	st = styleDim
 
 	switch h.Status {
 	case model.StatusUp:
-		dot, label, st = "●", "up", styleOK
+		// A healthy host needs no word. The filled green dot says it, and
+		// leaving the label off makes the rows that do carry text — down, auth,
+		// bad output — stand out by being the only ones with any.
+		//
+		// Shape carries the meaning as well as colour: ● filled versus ○ hollow
+		// stays legible without relying on the green being distinguishable.
+		dot, label, st = "●", "", styleOK
 	case model.StatusStale:
 		dot, label, st = "◐", "stale", styleWarn
 	case model.StatusDown:
@@ -220,7 +255,7 @@ func statusCell(h *model.Host) string {
 	default:
 		dot, label = "·", "—"
 	}
-	return st.Render(padRight(dot+" "+label, colStatusW))
+	return dot, label, st
 }
 
 func (m Model) cpuCell(h *model.Host) string {

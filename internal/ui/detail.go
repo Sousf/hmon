@@ -39,7 +39,7 @@ func (m Model) detailPane(h *model.Host, budget int) []string {
 	}
 
 	head := []string{
-		"  " + styleTitle.Render(h.Name) + "  " + statusCell(h) +
+		"  " + styleTitle.Render(h.Name) + "  " + statusInline(h) +
 			paneUptime(h),
 	}
 
@@ -384,7 +384,7 @@ func (m Model) renderDetail() string {
 	// Header.
 	b.WriteString(styleTitle.Render(h.Name))
 	b.WriteString("  ")
-	b.WriteString(statusCell(h))
+	b.WriteString(statusInline(h))
 	if h.Status.Live() && h.Cur.Uptime > 0 {
 		b.WriteString(styleDim.Render("· up " + humanDuration(h.Cur.Uptime)))
 	}
