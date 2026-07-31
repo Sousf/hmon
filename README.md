@@ -7,11 +7,11 @@ SSH and shows the whole fleet in one sortable table.
   hmon                                               5 hosts · 09:41:22
 
   HOST        STATUS   CPU         MEM          /      TEMP    NET ↓ ↑
-  nas         ● up     12% ▁▂▁▁▃   8.1/32G      61%    38°C    1.2M 0.3M
-  proxmox-1   ● up     47% ▃▄▅▄▆   22.4/64G     34%    52°C    8.4M 2.1M
-  pi-dns      ● up      3% ▁▁▁▁▁   0.3/1.0G     22%    44°C    0.1M 0.0M
-  media       ● up     88% ▆▇█▇█   14.2/16G     91%    71°C     22M 1.4M
-  backup      ○ down    —          —             —      —        —
+  nas            ●     12% ▁▂▁▁▃   8.1/32G      61%    38°C    1.2M 0.3M
+  proxmox-1      ●     47% ▃▄▅▄▆   22.4/64G     34%    52°C    8.4M 2.1M
+  pi-dns         ●      3% ▁▁▁▁▁   0.3/1.0G     22%    44°C    0.1M 0.0M
+  media          ●     88% ▆▇█▇█   14.2/16G     91%    71°C     22M 1.4M
+  backup         ○    —          —             —      —        —
 
   ↑↓ move · enter detail · s sort · r refresh · q quit
 ```
@@ -56,15 +56,15 @@ overridden per host. All are empty by default, which means no filtering:
 report every filesystem, watch no particular service, show every container.
 
 ```yaml
-filesystems: [/, /mnt/tank]              # mount points to report
-services:    [ssh, docker, postgresql]   # systemd units that should be active
-containers:  [caddy, synapse, postgres]  # containers that should be running
+filesystems: [/, /mnt/tank] # mount points to report
+services: [ssh, docker, postgresql] # systemd units that should be active
+containers: [caddy, synapse, postgres] # containers that should be running
 
 hosts:
   - nas
   - host: media-01.lan
     name: media
-    filesystems: [/, /mnt/media]         # per-host override
+    filesystems: [/, /mnt/media] # per-host override
     services: [jellyfin]
     containers: [sonarr, radarr]
 ```
@@ -82,15 +82,15 @@ no alerting.
 
 ## Keys
 
-| Key | Action |
-|---|---|
-| `↑` `↓` / `k` `j` | Move selection |
-| `enter` / `esc` | Open / leave detail view |
-| `s` / `i` | Cycle sort column / invert |
-| `c` / `m` | Sort processes by CPU / memory |
-| `S` | Open an interactive ssh session on the selected host |
-| `R` | Reboot the selected host (asks first) |
-| `r` / `q` | Refresh / quit |
+| Key               | Action                                               |
+| ----------------- | ---------------------------------------------------- |
+| `↑` `↓` / `k` `j` | Move selection                                       |
+| `enter` / `esc`   | Open / leave detail view                             |
+| `s` / `i`         | Cycle sort column / invert                           |
+| `c` / `m`         | Sort processes by CPU / memory                       |
+| `S`               | Open an interactive ssh session on the selected host |
+| `R`               | Reboot the selected host (asks first)                |
+| `r` / `q`         | Refresh / quit                                       |
 
 The layout is responsive. On a tall terminal the space below the table shows
 live detail for the selected host — filesystems, interfaces, sensors, and top
@@ -119,10 +119,10 @@ Resource metrics cannot tell you a service died — a host with a crashed
 postgres looks perfectly healthy on CPU and memory. hmon flags conditions no
 column can express, against the host name:
 
-| Flag | Meaning |
-|---|---|
-| `✗` | One or more systemd units in the failed state (named in the detail pane) |
-| `⟳` | Reboot required (`/var/run/reboot-required`) |
+| Flag | Meaning                                                                  |
+| ---- | ------------------------------------------------------------------------ |
+| `✗`  | One or more systemd units in the failed state (named in the detail pane) |
+| `⟳`  | Reboot required (`/var/run/reboot-required`)                             |
 
 ## Scripting
 
