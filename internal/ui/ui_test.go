@@ -3,7 +3,9 @@ package ui
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +23,32 @@ func init() {
 	// Render without ANSI so assertions compare plain text rather than escape
 	// sequences.
 	lipgloss.SetColorProfile(termenv.Ascii)
+}
+
+// fakeExecutor stands in for ad-hoc command execution, recording what it was
+// asked to run so tests can assert on scope without touching SSH.
+type fakeExecutor struct {
+	// Guarded because a fan-out calls Exec from one goroutine per host, which
+	// is the whole point of the feature under test.
+	mu     sync.Mutex
+	script string
+	addrs  []string
+	result collect.ExecResult
+	err    error
+}
+
+func (f *fakeExecutor) Exec(_ context.Context, addr, script string) (collect.ExecResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.script = script
+	f.addrs = append(f.addrs, addr)
+	return f.result, f.err
+}
+
+func (f *fakeExecutor) lastScript() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.script
 }
 
 // fakePoller stands in for SSH. Its existence is the reason no test here needs
@@ -56,7 +84,7 @@ func testModel(t *testing.T, names ...string) (Model, *model.Fleet) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg, fleet, &fakePoller{}), fleet
+	return New(cfg, fleet, &fakePoller{}, &fakeExecutor{}), fleet
 }
 
 func key(s string) tea.KeyMsg {
@@ -947,7 +975,7 @@ func TestWatchedContainersPolledForEveryHost(t *testing.T) {
 	}
 
 	fake := &containerAwarePoller{}
-	m := New(cfg, fleet, fake)
+	m := New(cfg, fleet, fake, &fakeExecutor{})
 	m.selected = "alpha"
 
 	drain(m.pollAll())
@@ -1022,5 +1050,270 @@ func TestStatusDotsAlignAcrossRows(t *testing.T) {
 			t.Errorf("dot %d at column %d, want %d — hosts of differing name length "+
 				"must not shift the status column", i, c, cols[0])
 		}
+	}
+}
+
+// TestCommandDefaultsToSelectedHostNotAllHosts is the safety property that
+// matters most here: with nothing marked, a command must reach one machine.
+// Defaulting an empty mark set to "everything" is how you accidentally run a
+// command on the whole fleet.
+func TestCommandDefaultsToSelectedHostNotAllHosts(t *testing.T) {
+	m, _ := testModel(t)
+	m.selected = "beta"
+
+	got := m.targets()
+	if len(got) != 1 || got[0].Name != "beta" {
+		t.Fatalf("targets = %v, want just beta", hostNames(got))
+	}
+}
+
+func TestMarkingSelectsHostsForCommand(t *testing.T) {
+	m, _ := testModel(t)
+
+	m = send(m, key(" ")) // mark alpha
+	m = send(m, key("down"), key(" "))
+	if got, want := len(m.targets()), 2; got != want {
+		t.Fatalf("targets = %d, want %d", got, want)
+	}
+
+	// Marks are independent of the cursor: moving away keeps them.
+	m = send(m, key("down"))
+	if got := hostNames(m.targets()); len(got) != 2 || got[0] != "alpha" || got[1] != "beta" {
+		t.Errorf("targets = %v, want [alpha beta]", got)
+	}
+
+	// Toggling off restores the single-host default.
+	m = send(m, key("up"), key(" "), key("up"), key(" "))
+	if got := hostNames(m.targets()); len(got) != 1 {
+		t.Errorf("targets = %v, want a single host after unmarking", got)
+	}
+}
+
+func TestMarkAllToggles(t *testing.T) {
+	m, _ := testModel(t)
+	m = send(m, key("a"))
+	if got, want := len(m.targets()), 3; got != want {
+		t.Fatalf("after a: targets = %d, want %d", got, want)
+	}
+	// Pressing it again clears rather than inverting, so what is marked is
+	// knowable without reading the table.
+	m = send(m, key("a"))
+	if got, want := len(m.marked), 0; got != want {
+		t.Errorf("after second a: marked = %d, want %d", got, want)
+	}
+}
+
+func TestMarkedHostsAreVisibleInTable(t *testing.T) {
+	m, _ := testModel(t)
+	m = send(m, key(" "))
+
+	var alphaLine, betaLine string
+	for _, ln := range strings.Split(m.View(), "\n") {
+		if strings.Contains(ln, "alpha") {
+			alphaLine = ln
+		}
+		if strings.Contains(ln, "beta") {
+			betaLine = ln
+		}
+	}
+	if !strings.Contains(alphaLine, "*") {
+		t.Errorf("marked host carries no mark: %q", alphaLine)
+	}
+	if strings.Contains(betaLine, "*") {
+		t.Errorf("unmarked host shows a mark: %q", betaLine)
+	}
+}
+
+// TestPromptSwallowsAllKeys guards against a command containing "q" quitting
+// the program, or "r" triggering a refresh, while it is being typed.
+func TestPromptSwallowsAllKeys(t *testing.T) {
+	m, _ := testModel(t)
+	m = send(m, key("x"))
+	if m.view != viewPrompt {
+		t.Fatal("x did not open the prompt")
+	}
+
+	for _, k := range []string{"q", "r", "R", "s", "a", "j", "k"} {
+		m = send(m, key(k))
+	}
+	if m.quitting {
+		t.Error("typing q into the prompt quit the program")
+	}
+	if m.view != viewPrompt {
+		t.Errorf("view = %v, want the prompt to stay open", m.view)
+	}
+	if got, want := m.prompt, "qrRsajk"; got != want {
+		t.Errorf("prompt = %q, want %q", got, want)
+	}
+}
+
+func TestPromptEditingAndCancel(t *testing.T) {
+	m, _ := testModel(t)
+	m = send(m, key("x"))
+	for _, r := range "df -h" {
+		m = send(m, key(string(r)))
+	}
+	if got, want := m.prompt, "df -h"; got != want {
+		t.Fatalf("prompt = %q, want %q", got, want)
+	}
+
+	m = send(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if got, want := m.prompt, "df -"; got != want {
+		t.Errorf("after backspace prompt = %q, want %q", got, want)
+	}
+
+	m = send(m, key("esc"))
+	if m.view != viewTable || m.prompt != "" {
+		t.Errorf("esc left view=%v prompt=%q, want table and empty", m.view, m.prompt)
+	}
+}
+
+func TestRunningCommandSendsScriptToEveryTarget(t *testing.T) {
+	m, _ := testModel(t)
+	fake := &fakeExecutor{result: collect.ExecResult{Output: "ok\n"}}
+	m.executor = fake
+
+	m = send(m, key("a"), key("x"))
+	for _, r := range "uptime" {
+		m = send(m, key(string(r)))
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("enter produced no command")
+	}
+	msg := cmd()
+	done, ok := msg.(execDoneMsg)
+	if !ok {
+		t.Fatalf("got %T, want execDoneMsg", msg)
+	}
+
+	if got, want := len(done.results), 3; got != want {
+		t.Errorf("results = %d, want %d", got, want)
+	}
+	if got, want := fake.lastScript(), "uptime"; got != want {
+		t.Errorf("script = %q, want %q", got, want)
+	}
+	// Results keep the on-screen host order regardless of which answered first.
+	for i, want := range []string{"alpha", "beta", "gamma"} {
+		if done.results[i].Host != want {
+			t.Errorf("result %d is %q, want %q", i, done.results[i].Host, want)
+		}
+	}
+}
+
+func TestNonZeroExitIsReportedNotTreatedAsError(t *testing.T) {
+	m, _ := testModel(t)
+	m.executor = &fakeExecutor{result: collect.ExecResult{Output: "nope\n", ExitCode: 2}}
+	m = send(m, key("x"))
+	for _, r := range "false" {
+		m = send(m, key(string(r)))
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	done := cmd().(execDoneMsg)
+	r := done.results[0]
+	if r.Err != nil {
+		t.Errorf("non-zero exit surfaced as an error: %v", r.Err)
+	}
+	if r.ExitCode != 2 || r.OK() {
+		t.Errorf("exit code = %d, OK = %v; want 2 and false", r.ExitCode, r.OK())
+	}
+
+	m = send(m, done)
+	if m.view != viewResults {
+		t.Error("results view did not open")
+	}
+	if out := m.View(); !strings.Contains(out, "exit 2") || !strings.Contains(out, "nope") {
+		t.Errorf("results view missing exit code or output:\n%s", out)
+	}
+}
+
+func TestEmptyCommandDoesNothing(t *testing.T) {
+	m, _ := testModel(t)
+	m = send(m, key("x"))
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Error("empty prompt issued a command")
+	}
+	if next.(Model).view != viewTable {
+		t.Error("empty prompt did not return to the table")
+	}
+}
+
+func TestScriptFileIsReadAndPiped(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/check.sh"
+	body := "#!/bin/sh\nuptime\ndf -h /\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, _ := testModel(t)
+	fake := &fakeExecutor{}
+	m.executor = fake
+	m = send(m, key("x"))
+	m.prompt = "@" + path
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd()
+
+	// The file contents go over the wire, not the path — nothing is written to
+	// the monitored machines.
+	if fake.lastScript() != body {
+		t.Errorf("script = %q, want the file contents %q", fake.lastScript(), body)
+	}
+}
+
+func TestMissingScriptFileReportsInsteadOfSilentlyDropping(t *testing.T) {
+	m, _ := testModel(t)
+	m = send(m, key("x"))
+	m.prompt = "@/no/such/script.sh"
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd != nil {
+		t.Error("a missing script still tried to run")
+	}
+	if m.view != viewResults {
+		t.Fatalf("view = %v, want the results view showing the error", m.view)
+	}
+	if out := m.View(); !strings.Contains(out, "no such") && !strings.Contains(out, "no/such") {
+		t.Errorf("error not surfaced:\n%s", out)
+	}
+}
+
+func TestResultsScrollAndClose(t *testing.T) {
+	m, _ := testModel(t)
+	m = send(m, tea.WindowSizeMsg{Width: 80, Height: 10})
+	m.view = viewResults
+	m.results = []execResult{{Host: "alpha", Output: strings.Repeat("line\n", 50)}}
+
+	m = send(m, key("down"), key("down"))
+	if m.resultScroll != 2 {
+		t.Errorf("resultScroll = %d, want 2", m.resultScroll)
+	}
+	m = send(m, key("up"), key("up"), key("up"))
+	if m.resultScroll != 0 {
+		t.Errorf("resultScroll = %d, want 0 (must not go negative)", m.resultScroll)
+	}
+
+	m = send(m, key("esc"))
+	if m.view != viewTable {
+		t.Error("esc did not close the results view")
+	}
+	// Results survive closing, so reopening does not lose them.
+	if len(m.results) == 0 {
+		t.Error("results were discarded on close")
+	}
+}
+
+func TestResolveScript(t *testing.T) {
+	if got, _ := resolveScript("  df -h  "); got != "df -h" {
+		t.Errorf("resolveScript trimmed to %q, want %q", got, "df -h")
+	}
+	if _, err := resolveScript("@"); err == nil {
+		t.Error("bare @ accepted, want an error about the missing path")
 	}
 }

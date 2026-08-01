@@ -187,6 +187,19 @@ func (r *SSHRunner) controlPath(addr string) string {
 }
 
 func (r *SSHRunner) sshArgs(addr string, args []string) []string {
+	out := r.sshBase(addr)
+
+	remote := "sh -s"
+	if len(args) > 0 {
+		remote += " -- " + strings.Join(args, " ")
+	}
+	return append(out, remote)
+}
+
+// sshBase builds the connection options and destination, without a remote
+// command. Shared by polling and ad-hoc execution so both get the same
+// multiplexing, timeouts, and non-interactive behaviour.
+func (r *SSHRunner) sshBase(addr string) []string {
 	connectSecs := int(r.timeout.Seconds())
 	if connectSecs < 1 {
 		connectSecs = 1
@@ -211,13 +224,7 @@ func (r *SSHRunner) sshArgs(addr string, args []string) []string {
 			"-o", "ControlPersist=60s",
 		)
 	}
-	out = append(out, addr)
-
-	remote := "sh -s"
-	if len(args) > 0 {
-		remote += " -- " + strings.Join(args, " ")
-	}
-	return append(out, remote)
+	return append(out, addr)
 }
 
 // Run pipes the collector script to the host's shell and returns its stdout.

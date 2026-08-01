@@ -37,6 +37,11 @@ interval: 2s
 # often; it is not marked down for being slow.
 timeout: 5s
 
+# Deadline for a command run across hosts with x. Generous compared to the
+# poll timeout: a poll must fail fast so one slow host does not stall the
+# table, but a command is something you are deliberately waiting on.
+command_timeout: 60s
+
 hosts:
   - nas
   - proxmox-1
@@ -125,6 +130,9 @@ func run() error {
 	fleet := model.NewFleet(cfg.HostRefs())
 	runner := collect.NewSSHRunner(cfg.Timeout)
 	poller := &collect.Poller{Runner: runner, Timeout: cfg.Timeout}
+	// Ad-hoc commands get their own runner with a longer deadline: polls are
+	// tuned to fail fast, but a command is something the operator is waiting on.
+	executor := collect.NewExecRunner(cfg.CommandTimeout)
 
 	// Tear down multiplexed SSH masters on exit so quitting does not leave
 	// background ssh processes behind.
@@ -135,7 +143,7 @@ func run() error {
 	}
 
 	p := tea.NewProgram(
-		ui.New(cfg, fleet, poller),
+		ui.New(cfg, fleet, poller, executor),
 		tea.WithAltScreen(),
 	)
 	_, err = p.Run()

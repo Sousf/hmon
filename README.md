@@ -113,6 +113,32 @@ The reboot runs as `ssh -t <host> sudo systemctl reboot`, interactively, so
 `sudo` can prompt for a password. Running it in the background would fail
 silently on any host without passwordless sudo.
 
+## Running commands
+
+`x` runs a command across hosts. `space` marks hosts and `a` marks all; with
+nothing marked it runs on the selected host alone — an empty mark set means
+"just this one", never "all of them". The prompt lists the target hosts while
+you type, because the mistake worth preventing is running somewhere you did
+not mean to.
+
+Commands run in parallel and their output is collected into a scrollable view
+with an exit code per host, so results are comparable side by side.
+
+`@path` pipes a local script file instead:
+
+```
+> @./checks/disk.sh
+```
+
+The file is read locally and piped to `sh` on each host, the same mechanism the
+collector uses — nothing is written to the monitored machines.
+
+Execution is non-interactive, so **anything that prompts will fail rather than
+hang** — `sudo` on a host that wants a password reports `a terminal is required
+to read the password`. That is deliberate: a prompt nobody can answer would
+block the whole fan-out. Use `S` for one host when you need a real terminal.
+`command_timeout` bounds each run, defaulting to 60s.
+
 ## Health
 
 Resource metrics cannot tell you a service died — a host with a crashed

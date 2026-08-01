@@ -24,6 +24,8 @@ type view int
 const (
 	viewTable view = iota
 	viewDetail
+	viewPrompt  // typing a command to run across hosts
+	viewResults // showing what that command produced
 )
 
 // sortKey is the column the table is ordered by.
@@ -89,9 +91,10 @@ type Poller interface {
 
 // Model is the Bubble Tea model.
 type Model struct {
-	cfg    *config.Config
-	fleet  *model.Fleet
-	poller Poller
+	cfg      *config.Config
+	fleet    *model.Fleet
+	poller   Poller
+	executor Executor
 
 	view     view
 	selected string // tracked by host name, not index, so the cursor stays on
@@ -106,6 +109,17 @@ type Model struct {
 	// keystroke.
 	confirmReboot string
 
+	// marked selects hosts for a fan-out command. Empty means the command
+	// applies to the cursor's host alone.
+	marked map[string]bool
+
+	// prompt holds the command being typed; results and resultScroll hold what
+	// the last one produced.
+	prompt       string
+	results      []execResult
+	resultScroll int
+	running      bool
+
 	width, height int
 	now           time.Time
 
@@ -118,13 +132,15 @@ type Model struct {
 }
 
 // New builds the UI model.
-func New(cfg *config.Config, fleet *model.Fleet, poller Poller) Model {
+func New(cfg *config.Config, fleet *model.Fleet, poller Poller, executor Executor) Model {
 	m := Model{
 		cfg:      cfg,
 		fleet:    fleet,
 		poller:   poller,
+		executor: executor,
 		sort:     sortName,
 		inFlight: make(map[string]bool),
+		marked:   make(map[string]bool),
 		now:      time.Now(),
 	}
 	if len(fleet.Hosts) > 0 {
@@ -214,6 +230,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fleet.Fail(msg.host, msg.kind, msg.err)
 		return m, nil
 
+	case execDoneMsg:
+		m.running = false
+		m.results = msg.results
+		m.resultScroll = 0
+		m.view = viewResults
+		return m, nil
+
 	case resumedMsg:
 		// Whatever was on screen is now as old as the ssh session was long.
 		cmd := m.pollAll()
@@ -228,6 +251,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// no normal binding can fire underneath it.
 	if m.confirmReboot != "" {
 		return m.handleConfirmKey(msg)
+	}
+	// The prompt likewise swallows everything, or typing "q" into a command
+	// would quit instead.
+	if m.view == viewPrompt {
+		return m.handlePromptKey(msg)
+	}
+	if m.view == viewResults {
+		return m.handleResultsKey(msg)
 	}
 
 	switch msg.String() {
@@ -288,6 +319,36 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// exit 1, dropped connection).
 				return resumedMsg{}
 			})
+		}
+		return m, nil
+
+	case " ":
+		// Marking is what turns a single-host action into a fan-out.
+		if _, ok := m.fleet.Get(m.selected); ok {
+			if m.marked[m.selected] {
+				delete(m.marked, m.selected)
+			} else {
+				m.marked[m.selected] = true
+			}
+		}
+		return m, nil
+
+	case "a":
+		// All-or-nothing rather than invert: after pressing it you know exactly
+		// what is marked without reading the table.
+		if len(m.marked) == len(m.fleet.Hosts) {
+			m.marked = make(map[string]bool)
+		} else {
+			for _, h := range m.fleet.Hosts {
+				m.marked[h.Name] = true
+			}
+		}
+		return m, nil
+
+	case "x":
+		if len(m.targets()) > 0 {
+			m.view = viewPrompt
+			m.prompt = ""
 		}
 		return m, nil
 
@@ -439,8 +500,13 @@ func (m Model) View() string {
 	if m.confirmReboot != "" {
 		return m.renderConfirm()
 	}
-	if m.view == viewDetail {
+	switch m.view {
+	case viewDetail:
 		return m.renderDetail()
+	case viewPrompt:
+		return m.renderPrompt()
+	case viewResults:
+		return m.renderResults()
 	}
 	return m.renderTable()
 }

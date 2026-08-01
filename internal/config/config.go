@@ -23,6 +23,11 @@ import (
 const (
 	DefaultInterval = 2 * time.Second
 	DefaultTimeout  = 5 * time.Second
+	// DefaultCommandTimeout is generous compared to the poll timeout on
+	// purpose: a poll must fail fast so one slow host does not stall the table,
+	// but an ad-hoc command is something the operator is deliberately waiting
+	// on and may legitimately take much longer.
+	DefaultCommandTimeout = 60 * time.Second
 )
 
 // Limits is a warn/critical pair. Thresholds drive nothing but the colour a
@@ -128,7 +133,9 @@ func (h *Host) UnmarshalYAML(value *yaml.Node) error {
 type Config struct {
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
-	Hosts    []Host        `yaml:"hosts"`
+	// CommandTimeout bounds a command run across the fleet with x.
+	CommandTimeout time.Duration `yaml:"command_timeout"`
+	Hosts          []Host        `yaml:"hosts"`
 	// Watch lists applied to every host unless that host overrides them.
 	//
 	// Each is empty by default, and empty means "no filtering": report every
@@ -248,6 +255,9 @@ func (c *Config) applyDefaults() {
 	if c.Timeout == 0 {
 		c.Timeout = DefaultTimeout
 	}
+	if c.CommandTimeout == 0 {
+		c.CommandTimeout = DefaultCommandTimeout
+	}
 	if c.Thresholds.CPU == (Limits{}) {
 		c.Thresholds.CPU = Limits{Warn: 75, Crit: 90}
 	}
@@ -275,6 +285,9 @@ func (c *Config) validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("config: timeout must be positive, got %s", c.Timeout)
+	}
+	if c.CommandTimeout <= 0 {
+		return fmt.Errorf("config: command_timeout must be positive, got %s", c.CommandTimeout)
 	}
 	// Timeout is deliberately allowed to exceed interval. Overlapping polls are
 	// already prevented by skipping hosts with a collection in flight, and

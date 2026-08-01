@@ -22,7 +22,16 @@ const (
 	colNetW    = 17
 )
 
-func (m Model) renderTable() string {
+// renderTable draws the fleet table, plus the live detail pane when there is
+// room for it.
+func (m Model) renderTable() string { return m.renderTableWith(true) }
+
+// renderTableOnly draws just the table, used as the backdrop for the command
+// prompt where the pane would only compete for attention with what you are
+// typing.
+func (m Model) renderTableOnly() string { return m.renderTableWith(false) }
+
+func (m Model) renderTableWith(withPane bool) string {
 	hosts := m.sortedHosts()
 
 	nameW := 4
@@ -49,7 +58,7 @@ func (m Model) renderTable() string {
 	// Header row. The leading pad matches the width of the selection cursor
 	// each data row carries, without which every column header sits two
 	// characters left of its values.
-	b.WriteString("  ")
+	b.WriteString("   ")
 	b.WriteString(styleHeader.Render(
 		padRight("HOST", nameW+healthFlagW) + "  " +
 			padCentre("STATUS", colStatusW) + "  " +
@@ -74,7 +83,7 @@ func (m Model) renderTable() string {
 	// spend the remainder on live detail for the selected host. Budget is
 	// whatever is left after reserving the separator, a blank, and the help
 	// line.
-	if budget := m.height - used - 3; m.splitActive() && budget >= minSplitLines {
+	if budget := m.height - used - 3; withPane && m.splitActive() && budget >= minSplitLines {
 		if h, ok := m.fleet.Get(m.selected); ok {
 			b.WriteString(styleDim.Render(separator(m.width)))
 			b.WriteString("\n")
@@ -85,9 +94,13 @@ func (m Model) renderTable() string {
 		}
 	}
 
+	if !withPane {
+		return b.String()
+	}
+
 	b.WriteString("\n")
 	b.WriteString(styleHelp.Render(fmt.Sprintf(
-		"↑↓ move · enter detail · S ssh · R reboot · s sort (%s%s) · i invert · r refresh · q quit",
+		"↑↓ move · enter detail · space mark · x run · S ssh · R reboot · s sort (%s%s) · r refresh · q quit",
 		m.sort, arrow(m.sortDesc))))
 	return b.String()
 }
@@ -115,10 +128,22 @@ func arrow(desc bool) string {
 func (m Model) renderRow(h *model.Host, nameW int) string {
 	selected := h.Name == m.selected
 
+	// Cursor and mark occupy separate cells: a host can be both the selection
+	// and marked, and one glyph cannot say both.
 	cursor := "  "
-	name := padRight(truncate(h.Name, nameW), nameW)
 	if selected {
 		cursor = styleSelected.Render("▸ ")
+	}
+	mark := " "
+	if m.marked[h.Name] {
+		// ASCII, for the same reason the health markers are: a font cannot draw
+		// it wider than its cell.
+		mark = styleAccentMark("*")
+	}
+	cursor += mark
+
+	name := padRight(truncate(h.Name, nameW), nameW)
+	if selected {
 		name = styleSelected.Render(name)
 	} else {
 		name = styleText.Render(name)
@@ -305,3 +330,5 @@ func netCell(h *model.Host) string {
 	return styleText.Render(padRight(
 		fmt.Sprintf("↓%s ↑%s", humanRate(rx), humanRate(tx)), colNetW))
 }
+
+func styleAccentMark(s string) string { return styleWarn.Render(s) }

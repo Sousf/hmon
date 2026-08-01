@@ -14,6 +14,11 @@ interval: 2s
 # often; it is not marked down for being slow.
 timeout: 5s
 
+# Deadline for a command run across hosts with x. Generous compared to the
+# poll timeout: a poll must fail fast so one slow host does not stall the
+# table, but a command is something you are deliberately waiting on.
+command_timeout: 60s
+
 hosts:
   - nas
   - proxmox-1
