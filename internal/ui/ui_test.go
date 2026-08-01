@@ -30,19 +30,29 @@ func init() {
 type fakeExecutor struct {
 	// Guarded because a fan-out calls Exec from one goroutine per host, which
 	// is the whole point of the feature under test.
-	mu     sync.Mutex
-	script string
-	addrs  []string
-	result collect.ExecResult
-	err    error
+	mu       sync.Mutex
+	script   string
+	asRoot   bool
+	password string
+	addrs    []string
+	result   collect.ExecResult
+	err      error
 }
 
-func (f *fakeExecutor) Exec(_ context.Context, addr, script string) (collect.ExecResult, error) {
+func (f *fakeExecutor) Exec(_ context.Context, addr string, req collect.ExecRequest) (collect.ExecResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.script = script
+	f.script = req.Script
+	f.asRoot = req.AsRoot
+	f.password = req.Password
 	f.addrs = append(f.addrs, addr)
 	return f.result, f.err
+}
+
+func (f *fakeExecutor) lastRequest() (script string, asRoot bool, password string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.script, f.asRoot, f.password
 }
 
 func (f *fakeExecutor) lastScript() string {
@@ -1315,5 +1325,157 @@ func TestResolveScript(t *testing.T) {
 	}
 	if _, err := resolveScript("@"); err == nil {
 		t.Error("bare @ accepted, want an error about the missing path")
+	}
+}
+
+// TestRootCommandAsksForPasswordBeforeSendingAnything is the property that
+// matters: X must not reach a host until a password has been entered.
+func TestRootCommandAsksForPasswordBeforeSendingAnything(t *testing.T) {
+	m, _ := testModel(t)
+	fake := &fakeExecutor{}
+	m.executor = fake
+
+	m = send(m, key("X"))
+	if m.view != viewPrompt || !m.asRoot {
+		t.Fatalf("X gave view=%v asRoot=%v, want the prompt in root mode", m.view, m.asRoot)
+	}
+	if out := m.View(); !strings.Contains(out, "RUN AS ROOT") {
+		t.Errorf("prompt does not announce root:\n%s", out)
+	}
+
+	for _, r := range "apt update" {
+		m = send(m, key(string(r)))
+	}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	if cmd != nil {
+		t.Error("root command ran before a password was entered")
+	}
+	if m.view != viewPassword {
+		t.Fatalf("view = %v, want the password prompt", m.view)
+	}
+	if len(fake.addrs) != 0 {
+		t.Errorf("executor was called before the password: %v", fake.addrs)
+	}
+}
+
+func TestPasswordIsNeverRendered(t *testing.T) {
+	m, _ := testModel(t)
+	m = send(m, key("X"))
+	for _, r := range "whoami" {
+		m = send(m, key(string(r)))
+	}
+	m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	for _, r := range "hunter2" {
+		m = send(m, key(string(r)))
+	}
+	out := m.View()
+	if strings.Contains(out, "hunter2") {
+		t.Errorf("password appears on screen:\n%s", out)
+	}
+	// Only the length shows, so you can see it registered your typing.
+	if !strings.Contains(out, strings.Repeat("•", len("hunter2"))) {
+		t.Errorf("password prompt shows no masked characters:\n%s", out)
+	}
+}
+
+func TestRootCommandSendsPasswordAndRootFlag(t *testing.T) {
+	m, _ := testModel(t)
+	fake := &fakeExecutor{result: collect.ExecResult{Output: "root\n"}}
+	m.executor = fake
+
+	m = send(m, key("a"), key("X"))
+	for _, r := range "whoami" {
+		m = send(m, key(string(r)))
+	}
+	m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+	for _, r := range "s3cret" {
+		m = send(m, key(string(r)))
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("no command issued after entering the password")
+	}
+	cmd()
+
+	script, asRoot, password := fake.lastRequest()
+	if script != "whoami" || !asRoot || password != "s3cret" {
+		t.Errorf("request = %q root=%v pw=%q, want whoami/true/s3cret", script, asRoot, password)
+	}
+
+	// The model must not keep the secret once the run owns it.
+	if m.password != "" {
+		t.Errorf("model still holds the password after launching the run")
+	}
+}
+
+func TestCancellingPasswordClearsIt(t *testing.T) {
+	m, _ := testModel(t)
+	fake := &fakeExecutor{}
+	m.executor = fake
+
+	m = send(m, key("X"))
+	for _, r := range "reboot" {
+		m = send(m, key(string(r)))
+	}
+	m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+	for _, r := range "secret" {
+		m = send(m, key(string(r)))
+	}
+	m = send(m, key("esc"))
+
+	if m.password != "" {
+		t.Error("password survived cancelling the prompt")
+	}
+	if m.asRoot {
+		t.Error("root mode survived cancelling")
+	}
+	if m.view != viewTable {
+		t.Errorf("view = %v, want the table", m.view)
+	}
+	if len(fake.addrs) != 0 {
+		t.Errorf("something ran despite cancelling: %v", fake.addrs)
+	}
+}
+
+func TestPlainCommandNeverSetsRootOrPassword(t *testing.T) {
+	m, _ := testModel(t)
+	fake := &fakeExecutor{}
+	m.executor = fake
+
+	m = send(m, key("x"))
+	for _, r := range "uptime" {
+		m = send(m, key(string(r)))
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd()
+
+	_, asRoot, password := fake.lastRequest()
+	if asRoot || password != "" {
+		t.Errorf("plain command sent root=%v pw=%q, want false and empty", asRoot, password)
+	}
+}
+
+func TestEmptyPasswordDoesNotRun(t *testing.T) {
+	m, _ := testModel(t)
+	fake := &fakeExecutor{}
+	m.executor = fake
+
+	m = send(m, key("X"))
+	for _, r := range "id" {
+		m = send(m, key(string(r)))
+	}
+	m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter with nothing typed
+	if cmd != nil {
+		t.Error("ran with an empty password")
+	}
+	if next.(Model).view != viewPassword {
+		t.Error("left the password prompt without a password")
 	}
 }

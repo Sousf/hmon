@@ -21,9 +21,39 @@ type ExecResult struct {
 	ExitCode int
 }
 
+// ExecRequest describes one ad-hoc run.
+type ExecRequest struct {
+	Script string
+	// AsRoot runs the whole script under sudo rather than expecting the script
+	// to call sudo itself. Doing it once at the top means a multi-line script
+	// works without sprinkling sudo through every line, and only one password
+	// is needed however many privileged commands it contains.
+	AsRoot bool
+	// Password is fed to sudo -S as the first line of stdin. It is never placed
+	// in the command line, which would expose it to anyone running ps on the
+	// host, and never written anywhere.
+	Password string
+}
+
 // Executor runs an arbitrary script on a host.
 type Executor interface {
-	Exec(ctx context.Context, addr, script string) (ExecResult, error)
+	Exec(ctx context.Context, addr string, req ExecRequest) (ExecResult, error)
+}
+
+// SudoAuthError marks a rejected sudo password. It is distinct from an ssh
+// auth failure: the connection worked and the machine is fine, the password
+// was simply wrong.
+type SudoAuthError struct{}
+
+func (e *SudoAuthError) Error() string { return "sudo password rejected" }
+
+// sudoRejected spots sudo turning the password down. Without this the output
+// is three rounds of "Sorry, try again" — sudo retries, consuming the script
+// lines as further password attempts — which reads like a broken command
+// rather than a bad password.
+func sudoRejected(output string) bool {
+	return strings.Contains(output, "Sorry, try again") ||
+		strings.Contains(output, "incorrect password attempt")
 }
 
 // sshSelfError is the exit status ssh uses for its own failures — a refused
@@ -43,9 +73,11 @@ const sshSelfError = 255
 // anything that tries to prompt — sudo wanting a password, an apt
 // confirmation — fails rather than hanging. That is deliberate, since a
 // prompt no one can answer would block a whole fan-out.
-func (r *SSHRunner) Exec(ctx context.Context, addr, script string) (ExecResult, error) {
-	cmd := exec.CommandContext(ctx, "ssh", append(r.sshBase(addr), "sh -s")...)
-	cmd.Stdin = strings.NewReader(script)
+func (r *SSHRunner) Exec(ctx context.Context, addr string, req ExecRequest) (ExecResult, error) {
+	remote, stdin := execRemote(req)
+
+	cmd := exec.CommandContext(ctx, "ssh", append(r.sshBase(addr), remote)...)
+	cmd.Stdin = strings.NewReader(stdin)
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -53,6 +85,12 @@ func (r *SSHRunner) Exec(ctx context.Context, addr, script string) (ExecResult, 
 
 	err := cmd.Run()
 	res := ExecResult{Output: out.String()}
+
+	if req.AsRoot && sudoRejected(res.Output) {
+		// Replace the output rather than pass it through: it is three identical
+		// retry lines that say nothing useful, and the script never ran.
+		return ExecResult{}, &SudoAuthError{}
+	}
 
 	if err == nil {
 		return res, nil
@@ -76,6 +114,23 @@ func (r *SSHRunner) Exec(ctx context.Context, addr, script string) (ExecResult, 
 		return res, &TimeoutError{Detail: "command exceeded " + r.timeout.String()}
 	}
 	return res, err
+}
+
+// execRemote builds the remote command and the stdin that feeds it.
+//
+// For a root run, -S makes sudo read the password from stdin, consuming
+// exactly one line, and the shell it then execs inherits the remainder as its
+// script. -p ” suppresses sudo's prompt, which would otherwise land in the
+// captured output.
+//
+// The password goes over stdin rather than the command line specifically so it
+// never appears in the remote process table, where any user on the host could
+// read it out of ps.
+func execRemote(req ExecRequest) (remote, stdin string) {
+	if !req.AsRoot {
+		return "sh -s", req.Script
+	}
+	return "sudo -S -p '' sh -s", req.Password + "\n" + req.Script
 }
 
 // ExecRunner adapts an SSHRunner to a longer deadline than polling uses.

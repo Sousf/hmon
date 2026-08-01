@@ -22,7 +22,7 @@ const scriptPrefix = "@"
 // Executor runs a script on a host. Narrowed to what the UI calls so tests can
 // substitute one without touching SSH.
 type Executor interface {
-	Exec(ctx context.Context, addr, script string) (collect.ExecResult, error)
+	Exec(ctx context.Context, addr string, req collect.ExecRequest) (collect.ExecResult, error)
 }
 
 // execResult pairs a host with what running the script on it produced.
@@ -104,6 +104,14 @@ func (m Model) runOnTargets(script string, hosts []*model.Host) tea.Cmd {
 	executor := m.executor
 	timeout := m.cfg.CommandTimeout
 
+	// Captured by value into the closure and cleared from the model by the
+	// caller, so the password lives no longer than the run that needs it.
+	req := collect.ExecRequest{
+		Script:   script,
+		AsRoot:   m.asRoot,
+		Password: m.password,
+	}
+
 	names := make([]string, len(hosts))
 	addrs := make([]string, len(hosts))
 	for i, h := range hosts {
@@ -121,7 +129,7 @@ func (m Model) runOnTargets(script string, hosts []*model.Host) tea.Cmd {
 				ctx, cancel := context.WithTimeout(context.Background(), timeout)
 				defer cancel()
 
-				res, err := executor.Exec(ctx, addrs[i], script)
+				res, err := executor.Exec(ctx, addrs[i], req)
 				results[i] = execResult{
 					Host:     names[i],
 					Output:   res.Output,
@@ -156,13 +164,51 @@ func (m Model) renderPrompt() string {
 
 	scope := styleSelected.Render(fmt.Sprintf("%d host%s", len(names), plural(len(names)))) +
 		styleDim.Render(": "+strings.Join(names, ", "))
-	b.WriteString("  " + styleHeader.Render("RUN ON ") + scope + "\n\n")
+
+	label := styleHeader.Render("RUN ON ")
+	if m.asRoot {
+		// Root runs are called out in the warning colour: the difference
+		// between this and an ordinary command is the whole machine.
+		label = styleWarn.Render("RUN AS ROOT ON ")
+	}
+	b.WriteString("  " + label + scope + "\n\n")
 
 	b.WriteString("  " + styleAccentPrompt(">") + " " + styleText.Render(m.prompt) +
 		styleSelected.Render("█") + "\n\n")
 
 	b.WriteString(styleHelp.Render(
 		"  enter run · esc cancel · @path runs a local script file"))
+	return b.String()
+}
+
+// renderPassword draws the sudo password prompt.
+//
+// The typed characters are never rendered, only their count, so the password
+// cannot be read off the screen or captured in a screenshot of the terminal.
+func (m Model) renderPassword() string {
+	hosts := m.targets()
+	names := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		names = append(names, h.Name)
+	}
+
+	var b strings.Builder
+	b.WriteString(m.renderTableOnly())
+	b.WriteString("\n")
+	b.WriteString(styleDim.Render(separator(m.width)))
+	b.WriteString("\n\n")
+
+	b.WriteString("  " + styleWarn.Render("RUN AS ROOT ON ") +
+		styleSelected.Render(fmt.Sprintf("%d host%s", len(names), plural(len(names)))) +
+		styleDim.Render(": "+strings.Join(names, ", ")) + "\n")
+	b.WriteString("  " + styleDim.Render("$ "+truncate(m.prompt, maxInt(20, m.width-6))) + "\n\n")
+
+	b.WriteString("  " + styleHeader.Render("sudo password") + " " +
+		styleText.Render(strings.Repeat("•", len([]rune(m.password)))) +
+		styleSelected.Render("█") + "\n\n")
+
+	b.WriteString(styleHelp.Render(
+		"  enter run · esc cancel · the password is used once and discarded"))
 	return b.String()
 }
 
@@ -291,6 +337,14 @@ func (m Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.asRoot {
+			// Nothing is sent until the password is entered, so the command
+			// text is kept and the run deferred to the password prompt.
+			m.view = viewPassword
+			m.password = ""
+			return m, nil
+		}
+
 		hosts := m.targets()
 		m.view = viewResults
 		m.running = true
@@ -353,6 +407,67 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "g":
 		m.resultScroll = 0
+		return m, nil
+	}
+	return m, nil
+}
+
+// handlePasswordKey collects the sudo password.
+//
+// The model's copy is cleared the moment the run is launched. Go strings are
+// immutable so the bytes cannot be wiped in place; dropping the reference as
+// early as possible is the practical limit, and the value never reaches disk,
+// argv, or the rendered screen.
+func (m Model) handlePasswordKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.view = viewTable
+		m.password = ""
+		m.prompt = ""
+		m.asRoot = false
+		return m, nil
+
+	case tea.KeyCtrlC:
+		m.quitting = true
+		m.password = ""
+		return m, tea.Quit
+
+	case tea.KeyEnter:
+		if m.password == "" {
+			return m, nil
+		}
+		script, err := resolveScript(m.prompt)
+		if err != nil {
+			m.password = ""
+			m.view = viewResults
+			m.results = []execResult{{Host: "—", Err: err}}
+			return m, nil
+		}
+
+		cmd := m.runOnTargets(script, m.targets())
+		m.password = "" // the request already holds its own copy
+		m.view = viewResults
+		m.running = true
+		m.results = nil
+		m.resultScroll = 0
+		return m, cmd
+
+	case tea.KeyBackspace:
+		if r := []rune(m.password); len(r) > 0 {
+			m.password = string(r[:len(r)-1])
+		}
+		return m, nil
+
+	case tea.KeyCtrlU:
+		m.password = ""
+		return m, nil
+
+	case tea.KeySpace:
+		m.password += " "
+		return m, nil
+
+	case tea.KeyRunes:
+		m.password += string(msg.Runes)
 		return m, nil
 	}
 	return m, nil

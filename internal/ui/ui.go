@@ -24,8 +24,9 @@ type view int
 const (
 	viewTable view = iota
 	viewDetail
-	viewPrompt  // typing a command to run across hosts
-	viewResults // showing what that command produced
+	viewPrompt   // typing a command to run across hosts
+	viewPassword // entering the sudo password for a root command
+	viewResults  // showing what that command produced
 )
 
 // sortKey is the column the table is ordered by.
@@ -115,7 +116,12 @@ type Model struct {
 
 	// prompt holds the command being typed; results and resultScroll hold what
 	// the last one produced.
-	prompt       string
+	prompt string
+	// asRoot runs the pending command under sudo; password holds the secret
+	// only between entry and the run that consumes it.
+	asRoot   bool
+	password string
+
 	results      []execResult
 	resultScroll int
 	running      bool
@@ -257,6 +263,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.view == viewPrompt {
 		return m.handlePromptKey(msg)
 	}
+	if m.view == viewPassword {
+		return m.handlePasswordKey(msg)
+	}
 	if m.view == viewResults {
 		return m.handleResultsKey(msg)
 	}
@@ -349,6 +358,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.targets()) > 0 {
 			m.view = viewPrompt
 			m.prompt = ""
+			m.asRoot = false
+		}
+		return m, nil
+
+	case "X":
+		// Same prompt, but the command will run under sudo and so needs a
+		// password before anything is sent.
+		if len(m.targets()) > 0 {
+			m.view = viewPrompt
+			m.prompt = ""
+			m.asRoot = true
 		}
 		return m, nil
 
@@ -505,6 +525,8 @@ func (m Model) View() string {
 		return m.renderDetail()
 	case viewPrompt:
 		return m.renderPrompt()
+	case viewPassword:
+		return m.renderPassword()
 	case viewResults:
 		return m.renderResults()
 	}

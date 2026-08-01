@@ -134,10 +134,35 @@ The file is read locally and piped to `sh` on each host, the same mechanism the
 collector uses — nothing is written to the monitored machines.
 
 Execution is non-interactive, so **anything that prompts will fail rather than
-hang** — `sudo` on a host that wants a password reports `a terminal is required
-to read the password`. That is deliberate: a prompt nobody can answer would
-block the whole fan-out. Use `S` for one host when you need a real terminal.
-`command_timeout` bounds each run, defaulting to 60s.
+hang**. That is deliberate: a prompt nobody can answer would block the whole
+fan-out. `command_timeout` bounds each run, defaulting to 60s.
+
+### Running as root
+
+`X` runs the command as root. hmon asks for your sudo password at a masked
+prompt, then runs the whole script under `sudo` on every target in parallel.
+
+The script runs as root from the first line, so it does not need `sudo`
+sprinkled through it — and however many privileged commands it contains, you
+enter one password.
+
+How the password is handled:
+
+- Typed at a masked prompt; only its length is ever drawn.
+- Sent as the **first line of stdin** over the existing encrypted SSH
+  connection. `sudo -S` consumes exactly that line and the shell receives the
+  rest as the script.
+- **Never placed in the command line**, where any user on the host could read
+  it out of `ps`. Never written to disk. Never echoed into the results.
+- Kept only for the run that uses it, then dropped — you are asked again next
+  time. (`sudo` on the host caches its own credentials for ~15 minutes, so
+  repeats are cheap on that side.)
+
+A rejected password is reported as `sudo password rejected`, and the script
+does not run.
+
+Use `S` instead when you need a real terminal on one host — anything that
+prompts interactively still belongs there.
 
 ## Health
 

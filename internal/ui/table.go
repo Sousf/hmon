@@ -100,7 +100,7 @@ func (m Model) renderTableWith(withPane bool) string {
 
 	b.WriteString("\n")
 	b.WriteString(styleHelp.Render(fmt.Sprintf(
-		"↑↓ move · enter detail · space mark · x run · S ssh · R reboot · s sort (%s%s) · r refresh · q quit",
+		"↑↓ move · enter detail · space mark · x run · X run as root · S ssh · R reboot · s sort (%s%s) · q quit",
 		m.sort, arrow(m.sortDesc))))
 	return b.String()
 }
