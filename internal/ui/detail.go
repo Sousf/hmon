@@ -408,7 +408,11 @@ func (m Model) renderDetail() string {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
-		b.WriteString(styleHelp.Render("esc back · r refresh · q quit"))
+		b.WriteString(renderHelp(
+			helpItem{"esc", "back"},
+			helpItem{"r", "refresh"},
+			helpItem{"q", "quit"},
+		))
 		return b.String()
 	}
 
@@ -420,7 +424,12 @@ func (m Model) renderDetail() string {
 	b.WriteString(m.detailProcs(h))
 
 	b.WriteString("\n")
-	b.WriteString(styleHelp.Render("esc back · c/m sort procs · r refresh · q quit"))
+	b.WriteString(renderHelp(
+		helpItem{"esc", "back"},
+		helpItem{"c/m", "sort procs"},
+		helpItem{"r", "refresh"},
+		helpItem{"q", "quit"},
+	))
 	return b.String()
 }
 

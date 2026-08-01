@@ -99,9 +99,17 @@ func (m Model) renderTableWith(withPane bool) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styleHelp.Render(fmt.Sprintf(
-		"↑↓ move · enter detail · space mark · x run · X run as root · S ssh · R reboot · s sort (%s%s) · q quit",
-		m.sort, arrow(m.sortDesc))))
+	b.WriteString(renderHelp(
+		helpItem{"↑↓", "move"},
+		helpItem{"enter", "detail"},
+		helpItem{"space", "mark"},
+		helpItem{"x", "run"},
+		helpItem{"X", "run as root"},
+		helpItem{"S", "ssh"},
+		helpItem{"R", "reboot"},
+		helpItem{"s", fmt.Sprintf("sort (%s%s)", m.sort, arrow(m.sortDesc))},
+		helpItem{"q", "quit"},
+	))
 	return b.String()
 }
 

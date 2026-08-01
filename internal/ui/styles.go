@@ -26,7 +26,15 @@ var (
 	styleWarn     = lipgloss.NewStyle().Foreground(colWarn)
 	styleCrit     = lipgloss.NewStyle().Foreground(colCrit)
 	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
-	styleHelp     = lipgloss.NewStyle().Foreground(colDim)
+
+	// The key bindings are the one piece of chrome you actually read, so they
+	// are drawn at full contrast rather than in the dim colour used for
+	// secondary data. Dim grey disappears entirely against a transparent
+	// terminal background, which is exactly where a help line is least
+	// guessable.
+	styleHelpKey  = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
+	styleHelpText = lipgloss.NewStyle().Foreground(colText)
+	styleHelpSep  = lipgloss.NewStyle().Foreground(colDim)
 )
 
 // levelStyle maps a threshold classification onto its colour.

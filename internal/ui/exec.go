@@ -176,8 +176,11 @@ func (m Model) renderPrompt() string {
 	b.WriteString("  " + styleAccentPrompt(">") + " " + styleText.Render(m.prompt) +
 		styleSelected.Render("█") + "\n\n")
 
-	b.WriteString(styleHelp.Render(
-		"  enter run · esc cancel · @path runs a local script file"))
+	b.WriteString("  " + renderHelp(
+		helpItem{"enter", "run"},
+		helpItem{"esc", "cancel"},
+		helpItem{"@path", "runs a local script file"},
+	))
 	return b.String()
 }
 
@@ -207,8 +210,11 @@ func (m Model) renderPassword() string {
 		styleText.Render(strings.Repeat("•", len([]rune(m.password)))) +
 		styleSelected.Render("█") + "\n\n")
 
-	b.WriteString(styleHelp.Render(
-		"  enter run · esc cancel · the password is used once and discarded"))
+	b.WriteString("  " + renderHelp(
+		helpItem{"enter", "run"},
+		helpItem{"esc", "cancel"},
+	))
+	b.WriteString(styleDim.Render("   the password is used once and discarded"))
 	return b.String()
 }
 
@@ -267,7 +273,11 @@ func (m Model) renderResults() string {
 	if len(lines) > visible {
 		more = fmt.Sprintf(" · %d/%d lines", min(m.resultScroll+visible, len(lines)), len(lines))
 	}
-	return out + "\n\n" + styleHelp.Render("↑↓ scroll · esc close"+more)
+	help := renderHelp(
+		helpItem{"↑↓", "scroll"},
+		helpItem{"esc", "close"},
+	)
+	return out + "\n\n" + help + styleDim.Render(more)
 }
 
 func (m Model) resultBlock(r execResult) []string {
