@@ -159,7 +159,7 @@ func (m Model) renderPrompt() string {
 	var b strings.Builder
 	b.WriteString(m.renderTableOnly())
 	b.WriteString("\n")
-	b.WriteString(styleDim.Render(separator(m.width)))
+	b.WriteString(styleFaint.Render(separator(m.width)))
 	b.WriteString("\n\n")
 
 	scope := styleSelected.Render(fmt.Sprintf("%d host%s", len(names), plural(len(names)))) +
@@ -198,7 +198,7 @@ func (m Model) renderPassword() string {
 	var b strings.Builder
 	b.WriteString(m.renderTableOnly())
 	b.WriteString("\n")
-	b.WriteString(styleDim.Render(separator(m.width)))
+	b.WriteString(styleFaint.Render(separator(m.width)))
 	b.WriteString("\n\n")
 
 	b.WriteString("  " + styleWarn.Render("RUN AS ROOT ON ") +

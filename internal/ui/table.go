@@ -85,7 +85,7 @@ func (m Model) renderTableWith(withPane bool) string {
 	// line.
 	if budget := m.height - used - 3; withPane && m.splitActive() && budget >= minSplitLines {
 		if h, ok := m.fleet.Get(m.selected); ok {
-			b.WriteString(styleDim.Render(separator(m.width)))
+			b.WriteString(styleFaint.Render(separator(m.width)))
 			b.WriteString("\n")
 			for _, line := range m.detailPane(h, budget) {
 				b.WriteString(line)
