@@ -565,7 +565,11 @@ func (m Model) less(hosts []*model.Host) func(i, j int) bool {
 				return a.Name < b.Name
 			}
 		default:
-			return a.Name < b.Name
+			// Falls through to the flip below rather than returning here. The
+			// tie-break branches above do return early on purpose — equal values
+			// must always order by name, or rows reshuffle between frames — but
+			// this is the name column itself, and i has to be able to reverse it.
+			less = a.Name < b.Name
 		}
 		if m.sortDesc {
 			return !less

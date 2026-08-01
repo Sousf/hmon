@@ -252,3 +252,51 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// i inverts the sort, and has to do so for the name column too — the one
+// selected by default, and so the one most likely to be inverted first.
+func TestInvertReversesNameSort(t *testing.T) {
+	m, _ := testModel(t, "alpha", "beta", "gamma")
+
+	m.sort, m.sortDesc = sortName, false
+	if got := rowNames(m); !equal(got, []string{"alpha", "beta", "gamma"}) {
+		t.Fatalf("ascending = %v", got)
+	}
+	m.sortDesc = true
+	if got := rowNames(m); !equal(got, []string{"gamma", "beta", "alpha"}) {
+		t.Errorf("descending = %v, want the reverse", got)
+	}
+}
+
+// The control: a metric column reverses too, and equal values still tie-break
+// by name ascending in both directions so rows do not reshuffle between frames.
+func TestInvertReversesMetricSortButNotTies(t *testing.T) {
+	m, f := testModel(t, "alpha", "beta", "gamma")
+	at := time.Now()
+	for name, avail := range map[string]uint64{
+		"alpha": 1 << 30, "beta": 2 << 30, "gamma": 3 << 30,
+	} {
+		f.Apply(name, model.Sample{At: at, HasMem: true, MemTotal: 4 << 30, MemAvail: avail})
+	}
+
+	// alpha uses the most memory, gamma the least.
+	m.sort, m.sortDesc = sortMem, true
+	if got := rowNames(m); !equal(got, []string{"alpha", "beta", "gamma"}) {
+		t.Errorf("descending = %v, want fullest first", got)
+	}
+	m.sortDesc = false
+	if got := rowNames(m); !equal(got, []string{"gamma", "beta", "alpha"}) {
+		t.Errorf("ascending = %v, want emptiest first", got)
+	}
+
+	// With nothing polled every value ties, and the name tie-break holds
+	// whichever way the sort is pointing.
+	m2, _ := testModel(t, "alpha", "beta", "gamma")
+	m2.sort = sortCPU
+	for _, desc := range []bool{false, true} {
+		m2.sortDesc = desc
+		if got := rowNames(m2); !equal(got, []string{"alpha", "beta", "gamma"}) {
+			t.Errorf("desc=%v: ties ordered %v, want name ascending", desc, got)
+		}
+	}
+}
