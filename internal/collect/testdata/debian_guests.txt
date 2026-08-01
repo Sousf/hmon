@@ -1,0 +1,21 @@
+v 1
+uptime 41.96
+cpu 204 0 135 41340 115 0 60 0
+mem 8024472 7455628
+swap 1048572 1048572
+load 0.00 0.00 0.00
+cores 10
+guestsreported 1
+guest good ct running 100.00MiB 10% 5s 7
+guest bad vm running - - 20s 3
+guest off ct stopped - - - -
+g good v 1
+g good mem 2048000 1024000
+g good end
+guestcores bad 2
+disk vda 20114 355496
+disk vdb 488448 0
+fs /fake 971298980 262145164 709153816
+fs /etc/hosts 954925484 10955264 895388948
+net eth0 302 42
+end

@@ -150,8 +150,18 @@ type Config struct {
 	Services    []string `yaml:"services"`
 	Containers  []string `yaml:"containers"`
 
+	// Guests shows LXD instances as rows of their own, nested under the machine
+	// running them. On by default because it needs no configuration at all —
+	// instances are discovered, not listed — and a host with no LXD installed
+	// pays a single `command -v` for the privilege. It is a pointer so that
+	// "guests: false" can be told apart from the key being absent.
+	Guests *bool `yaml:"guests"`
+
 	Thresholds Thresholds `yaml:"thresholds"`
 }
+
+// GuestsEnabled reports whether LXD instances should be discovered.
+func (c *Config) GuestsEnabled() bool { return c.Guests == nil || *c.Guests }
 
 // FilesystemsFor returns the mount points to report for a host.
 func (c *Config) FilesystemsFor(h Host) []string {

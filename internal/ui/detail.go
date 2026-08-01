@@ -389,7 +389,14 @@ func (m Model) renderDetail() string {
 		b.WriteString(styleDim.Render("· up " + humanDuration(h.Cur.Uptime)))
 	}
 	b.WriteString("\n")
-	if h.Addr != h.Name {
+	switch {
+	case h.IsGuest():
+		// A guest has no address of its own, so say what it is and where it
+		// lives instead — which is the thing you would otherwise have to work
+		// out from the qualified name in the title.
+		b.WriteString(styleDim.Render("  LXD " + kindWord(h) + " on " + h.Parent))
+		b.WriteString("\n")
+	case h.Addr != h.Name:
 		b.WriteString(styleDim.Render("  " + h.Addr))
 		b.WriteString("\n")
 	}

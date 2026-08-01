@@ -67,11 +67,13 @@ type fakePoller struct {
 	sample   model.Sample
 	err      error
 	calls    []bool // opts.Detail for each call
+	opts     []collect.Opts
 	services []string
 }
 
 func (f *fakePoller) Poll(_ context.Context, _ string, opts collect.Opts) (model.Sample, error) {
 	f.calls = append(f.calls, opts.Detail)
+	f.opts = append(f.opts, opts)
 	f.services = opts.Services
 	if f.err != nil {
 		return model.Sample{}, f.err

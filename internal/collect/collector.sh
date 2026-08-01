@@ -19,6 +19,10 @@
 #   containers     docker and lxc listings; shells out, so also detail-only
 #   svc=a,b,c      report whether these services are active; one systemctl
 #                  call, cheap enough to run for the whole fleet every poll
+#   guests         discover LXD instances and measure each from the inside
+#   gprocs=NAME    also collect top processes for that one guest
+#   guest          this copy is running inside a guest; suppresses the
+#                  sections that would report the host's hardware as its own
 
 set -u
 
@@ -35,14 +39,28 @@ SYSFS="${HMON_SYSFS:-/sys}"
 
 WANT_PROCS=0
 WANT_CONTAINERS=0
+WANT_GUESTS=0
+WANT_TEMPS=1
+GUEST_PROCS=""
 WATCH_SERVICES=""
 for arg in "$@"; do
   case "$arg" in
     procs)      WANT_PROCS=1 ;;
     containers) WANT_CONTAINERS=1 ;;
+    guests)     WANT_GUESTS=1 ;;
+    gprocs=*)   GUEST_PROCS=$(echo "$arg" | cut -d= -f2-) ;;
+    # Inside a guest the sensors under /sys are the *host's*: lxcfs virtualises
+    # /proc but not /sys/class/hwmon, so a system container reads its host's
+    # package temperature and would report it as its own.
+    guest)      WANT_TEMPS=0 ;;
     svc=*)      WATCH_SERVICES=$(echo "$arg" | cut -d= -f2- | tr ',' ' ') ;;
   esac
 done
+
+# Ceiling on how many LXD instances one host will report. A homelab machine has
+# a handful; the cap is there so a host running dozens cannot stretch a poll
+# past its deadline and take the machine's own reading down with it.
+MAX_GUESTS=8
 
 # Format version. The parser rejects output it does not recognise rather than
 # silently misreading columns.
@@ -162,6 +180,83 @@ if [ "$WANT_CONTAINERS" -eq 1 ]; then
   [ "$have_runtime" -eq 1 ] && echo "containersreported 1"
 fi
 
+# --- guests (opt-in) -------------------------------------------------------
+# An LXD instance is a machine in its own right, so it is measured with this
+# very collector rather than with a second, lesser one: the client pipes a copy
+# of this script in as HMON_GUEST_PROBE, and it is piped onward into each
+# instance over `lxc exec`. Nothing is installed inside the guest either, and a
+# guest's CPU, memory, and network numbers therefore come from exactly the same
+# code as its host's.
+#
+# Each guest's lines are prefixed "g NAME", which keeps its output a
+# self-contained sub-document — its own version line, metrics, and end sentinel.
+# A probe cut short halfway is then rejected on its own, without casting doubt
+# on the host's reading.
+#
+# One `lxc list` supplies both the names and LXD's own accounting, because that
+# accounting is all that is left to show for an instance we cannot get inside:
+# one that is stopped, or a VM running no lxd-agent.
+if [ "$WANT_GUESTS" -eq 1 ]; then
+  guestlist=""
+  lxd_answered=0
+  if command -v lxc >/dev/null 2>&1; then
+    if guestlist=$(lxc list --format csv -c nstmMuN 2>/dev/null); then
+      lxd_answered=1
+    fi
+  else
+    # No LXD at all is a definite answer rather than a failed one — this host
+    # has no guests — and saying so lets the client drop any it used to show.
+    lxd_answered=1
+  fi
+
+  if [ "$lxd_answered" -eq 1 ]; then
+    # Same sentinel role as containersreported: it tells the client this
+    # section actually ran, so a poll that skipped it is never mistaken for one
+    # where every instance was destroyed.
+    echo "guestsreported 1"
+
+    # Empty columns become "-" so field positions never shift. LXD leaves
+    # memory and disk blank for an instance it cannot account for, and an empty
+    # CSV field would otherwise slide every later column one to the left.
+    printf '%s\n' "$guestlist" | head -n "$MAX_GUESTS" | awk -F, 'NF >= 3 {
+      kind = ($3 == "VIRTUAL-MACHINE") ? "vm" : "ct"
+      for (i = 4; i <= 7; i++) if ($i == "") $i = "-"
+      print "guest", $1, kind, tolower($2), $4, $5, $6, $7
+    }'
+
+    if [ -n "${HMON_GUEST_PROBE:-}" ]; then
+      # A guest whose agent is wedged would otherwise hang until the client's
+      # own deadline and lose the host's reading along with its own.
+      gtimeout=""
+      command -v timeout >/dev/null 2>&1 && gtimeout="timeout 3"
+
+      printf '%s\n' "$guestlist" | head -n "$MAX_GUESTS" \
+        | awk -F, 'NF >= 2 && tolower($2) == "running" { print $1 }' \
+        | while read -r g; do
+            [ -n "$g" ] || continue
+            gargs="guest"
+            [ "$g" = "$GUEST_PROCS" ] && gargs="guest procs"
+
+            # shellcheck disable=SC2086
+            out=$(printf '%s\n' "$HMON_GUEST_PROBE" \
+                    | $gtimeout lxc exec "$g" -- sh -s $gargs 2>/dev/null)
+            if [ -n "$out" ]; then
+              printf '%s\n' "$out" | sed "s|^|g $g |"
+            else
+              # Could not get inside. LXD's cumulative CPU-seconds counter is
+              # then the only CPU signal available, and it is meaningless
+              # without knowing how many cores it accumulated across.
+              cores=$(lxc config get "$g" limits.cpu 2>/dev/null)
+              case "$cores" in
+                ''|*[!0-9]*) cores=0 ;;
+              esac
+              echo "guestcores $g $cores"
+            fi
+          done
+    fi
+  fi
+fi
+
 # --- reboot required -------------------------------------------------------
 [ -f /var/run/reboot-required ] && echo "rebootrequired 1"
 
@@ -239,6 +334,7 @@ fi
 # millidegrees C. Hosts exposing no sensors simply emit nothing here and render
 # as n/a rather than failing the poll.
 for f in "$SYSFS"/class/hwmon/hwmon*/temp*_input; do
+  [ "$WANT_TEMPS" -eq 1 ] || break
   [ -r "$f" ] || continue
   read -r milli < "$f" 2>/dev/null || continue
   [ -n "$milli" ] || continue
@@ -259,6 +355,7 @@ done
 
 # Thermal zones cover SoCs (Raspberry Pi and friends) that expose no hwmon.
 for f in "$SYSFS"/class/thermal/thermal_zone*/temp; do
+  [ "$WANT_TEMPS" -eq 1 ] || break
   [ -r "$f" ] || continue
   read -r milli < "$f" 2>/dev/null || continue
   [ -n "$milli" ] || continue

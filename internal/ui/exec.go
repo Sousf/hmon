@@ -55,7 +55,9 @@ func (m Model) targets() []*model.Host {
 	if len(out) > 0 {
 		return out
 	}
-	if h, ok := m.fleet.Get(m.selected); ok {
+	// Only machines can be a target: commands are run over ssh, and a guest has
+	// no address of its own to connect to.
+	if h, ok := m.fleet.Get(m.selected); ok && !h.IsGuest() {
 		return []*model.Host{h}
 	}
 	return nil

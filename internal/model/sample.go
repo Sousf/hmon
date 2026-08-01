@@ -13,6 +13,11 @@ type Status int
 const (
 	StatusUnknown Status = iota // never polled yet
 	StatusUp
+	// StatusStopped is an LXD guest that is not running. It sits here, below
+	// every failure, because it is not one: an instance you stopped on purpose
+	// is doing exactly what you asked. Only guests ever reach it — a machine
+	// that is off is simply unreachable, and we cannot tell why.
+	StatusStopped
 	StatusStale // one failed poll; last known values still shown
 	StatusDown  // two or more consecutive failures
 	StatusAuth  // authentication rejected — a configuration problem
@@ -30,6 +35,8 @@ func (s Status) String() string {
 	switch s {
 	case StatusUp:
 		return "up"
+	case StatusStopped:
+		return "stopped"
 	case StatusStale:
 		return "stale"
 	case StatusDown:
@@ -118,6 +125,45 @@ func (c Container) Running() bool { return c.State == "running" }
 // Missing reports that a watched container does not exist on this host.
 func (c Container) Missing() bool { return c.State == ContainerMissing }
 
+// GuestKind distinguishes an LXD virtual machine from a system container.
+type GuestKind string
+
+const (
+	GuestVM        GuestKind = "vm"
+	GuestContainer GuestKind = "ct"
+)
+
+// Guest is one LXD instance discovered on a host.
+//
+// It is a transport type only: the fleet turns each one into a Host of its own,
+// which is what lets a guest reuse every derived value a machine gets.
+type Guest struct {
+	Name  string
+	Kind  GuestKind
+	State string // running, stopped, frozen, ...
+
+	// Sample is what the guest reported about itself, collected by running the
+	// collector inside it. Probed says whether that succeeded — a stopped
+	// instance, or a VM with no lxd-agent, cannot be entered — and when it did
+	// not, only the LXD-side fields below are known.
+	Sample Sample
+	Probed bool
+
+	// LXD's own accounting, which is all there is for an instance we could not
+	// get inside. CPUSecs is cumulative, so it only becomes a percentage after
+	// a second poll, and only once divided by Cores. Cores is zero when LXD
+	// places no CPU limit on the instance, in which case the guest is free to
+	// use every core its host has.
+	MemUsed uint64
+	MemPct  float64
+	CPUSecs float64
+	Procs   int
+	Cores   int
+}
+
+// Running reports whether the instance is up, whether or not we got inside it.
+func (g Guest) Running() bool { return g.State == "running" }
+
 // Temp is a single temperature sensor reading in degrees Celsius.
 type Temp struct {
 	Label string
@@ -192,6 +238,13 @@ type Sample struct {
 	// container vanished, and conflating them raises a false alarm on every
 	// host the operator is not currently looking at.
 	HasContainerInfo bool
+
+	// Guests are the LXD instances found on this host. HasGuestInfo carries the
+	// same distinction HasContainerInfo does, and for the same reason: a poll
+	// that skipped the section must not be read as one where every instance was
+	// destroyed.
+	Guests       []Guest
+	HasGuestInfo bool
 
 	// HasCPU and HasMem record whether those readings were present at all, so
 	// a host that omits them renders "n/a" rather than a convincing zero.

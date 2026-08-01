@@ -30,6 +30,12 @@ type Host struct {
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
 
+	// Parent and Kind are set only for an LXD instance, whose Name is qualified
+	// as "<host>/<instance>". Both are absent for a configured machine, so a
+	// consumer that predates guests reads the same document it always did.
+	Parent string `json:"parent,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+
 	UptimeSeconds float64 `json:"uptime_seconds,omitempty"`
 	Cores         int     `json:"cores,omitempty"`
 
@@ -96,11 +102,25 @@ func Build(f *model.Fleet, at time.Time) Fleet {
 	return out
 }
 
+// guestKind names what an LXD instance is, and is empty for a machine.
+func guestKind(h *model.Host) string {
+	switch h.Kind {
+	case model.KindVM:
+		return "vm"
+	case model.KindContainer:
+		return "container"
+	default:
+		return ""
+	}
+}
+
 func buildHost(h *model.Host) Host {
 	s := h.Cur
 	host := Host{
 		Name:           h.Name,
 		Addr:           h.Addr,
+		Parent:         h.Parent,
+		Kind:           guestKind(h),
 		Status:         h.Status.String(),
 		Error:          h.LastErr,
 		Cores:          s.Cores,
@@ -152,7 +172,10 @@ func buildHost(h *model.Host) Host {
 		})
 	}
 
-	host.Healthy = h.Status == model.StatusUp &&
+	// A stopped guest is healthy. Nothing is wrong with an instance that is off
+	// because someone turned it off, and a cron job branching on this field
+	// should not page anyone for it.
+	host.Healthy = (h.Status == model.StatusUp || h.Status == model.StatusStopped) &&
 		len(s.FailedUnits) == 0 &&
 		len(s.StoppedServices()) == 0 &&
 		len(s.StoppedContainers()) == 0

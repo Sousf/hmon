@@ -170,7 +170,9 @@ func (m Model) tick() tea.Cmd {
 func (m Model) pollAll() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.fleet.Hosts))
 	for _, h := range m.fleet.Hosts {
-		if m.inFlight[h.Name] {
+		// Guests have no address of their own; they are measured through the
+		// machine hosting them, on that machine's poll.
+		if h.IsGuest() || m.inFlight[h.Name] {
 			continue
 		}
 		// The expensive sections are only collected for the host whose detail is
@@ -192,6 +194,10 @@ func (m Model) pollOne(h *model.Host, detail bool) tea.Cmd {
 		// A watch list makes containers a fleet-wide health signal, so every
 		// host with one is asked every poll — not just the selected row.
 		Containers: len(h.Containers) > 0,
+		Guests:     m.cfg.GuestsEnabled(),
+		// Processes cost a sampling window inside the guest as well, so they
+		// follow the same rule hosts do: only the row on screen pays for them.
+		GuestProcs: m.selectedGuestOn(h),
 	}
 	return func() tea.Msg {
 		s, err := poller.Poll(context.Background(), addr, opts)
@@ -284,11 +290,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.view == viewTable {
 			m.view = viewDetail
-			// Fetch processes for this host straight away rather than making
-			// the user wait a full interval to see them.
-			if h, ok := m.fleet.Get(m.selected); ok && !m.inFlight[h.Name] {
-				m.inFlight[h.Name] = true
-				return m, m.pollOne(h, true)
+			// Fetch processes for this row straight away rather than making the
+			// user wait a full interval to see them. A guest is collected
+			// through its host, so that is the poll to bring forward — and it
+			// wants the guest's processes, not the host's.
+			if h, ok := m.fleet.Get(m.selected); ok {
+				target := h
+				if h.IsGuest() {
+					target, ok = m.fleet.Get(h.Parent)
+				}
+				if ok && !m.inFlight[target.Name] {
+					m.inFlight[target.Name] = true
+					return m, m.pollOne(target, target == h)
+				}
 			}
 		}
 		return m, nil
@@ -320,7 +334,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Hand the terminal to ssh and take it back when the shell exits.
 		// Bubble Tea restores the alt screen and input mode around this, so a
 		// crashed session cannot leave the terminal in a broken state.
-		if h, ok := m.fleet.Get(m.selected); ok {
+		if h, ok := m.selectedMachine(); ok {
 			return m, tea.ExecProcess(exec.Command("ssh", h.Addr), func(error) tea.Msg {
 				// Errors are deliberately dropped: ssh has already printed
 				// whatever went wrong to the terminal the user was just
@@ -332,8 +346,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case " ":
-		// Marking is what turns a single-host action into a fan-out.
-		if _, ok := m.fleet.Get(m.selected); ok {
+		// Marking is what turns a single-host action into a fan-out, so only
+		// machines can be marked — everything a mark leads to runs over ssh.
+		if _, ok := m.selectedMachine(); ok {
 			if m.marked[m.selected] {
 				delete(m.marked, m.selected)
 			} else {
@@ -345,11 +360,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		// All-or-nothing rather than invert: after pressing it you know exactly
 		// what is marked without reading the table.
-		if len(m.marked) == len(m.fleet.Hosts) {
+		if len(m.marked) == m.machineCount() {
 			m.marked = make(map[string]bool)
 		} else {
 			for _, h := range m.fleet.Hosts {
-				m.marked[h.Name] = true
+				if !h.IsGuest() {
+					m.marked[h.Name] = true
+				}
 			}
 		}
 		return m, nil
@@ -374,7 +391,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "R":
 		// Only opens the dialog. Nothing reaches the machine until confirmed.
-		if _, ok := m.fleet.Get(m.selected); ok {
+		// Guests are excluded: rebooting one means `lxc restart` on its host,
+		// which is a different command with different consequences, and wiring
+		// it in behind the same key would make R mean two things.
+		if _, ok := m.selectedMachine(); ok {
 			m.confirmReboot = m.selected
 		}
 		return m, nil
@@ -422,6 +442,41 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	)
 }
 
+// selectedMachine returns the selected row only when it is a real machine.
+// Everything hmon can do beyond looking — ssh, fan-out commands, reboot — goes
+// over ssh to an address, and a guest has none.
+func (m Model) selectedMachine() (*model.Host, bool) {
+	h, ok := m.fleet.Get(m.selected)
+	if !ok || h.IsGuest() {
+		return nil, false
+	}
+	return h, true
+}
+
+// machineCount is how many rows can be marked.
+func (m Model) machineCount() int {
+	n := 0
+	for _, h := range m.fleet.Hosts {
+		if !h.IsGuest() {
+			n++
+		}
+	}
+	return n
+}
+
+// selectedGuestOn returns the instance name to collect processes for when the
+// selected row is a guest of this host, and empty otherwise.
+func (m Model) selectedGuestOn(h *model.Host) string {
+	if !m.showingProcs() {
+		return ""
+	}
+	sel, ok := m.fleet.Get(m.selected)
+	if !ok || sel.Parent != h.Name {
+		return ""
+	}
+	return sel.Display()
+}
+
 // move shifts the selection by delta within the current sort order, clamping
 // at the ends rather than wrapping.
 func (m *Model) move(delta int) {
@@ -446,14 +501,41 @@ func (m *Model) move(delta int) {
 	m.selected = hosts[idx].Name
 }
 
-// sortedHosts returns hosts in display order. The sort is stable and always
-// falls back to name, so equal values (every host at 0% CPU, say) do not
-// reshuffle between frames.
+// sortedHosts returns rows in display order: configured machines ordered by the
+// chosen column, each followed by the guests running on it. The sort is stable
+// and always falls back to name, so equal values (every host at 0% CPU, say) do
+// not reshuffle between frames.
+//
+// Guests are ordered by name under their own host rather than joining the
+// global ordering. Sorting them into it would break the tree apart — a VM would
+// drift away from the machine it runs on the moment it got busy, which is
+// exactly when you want to see the two together.
 func (m Model) sortedHosts() []*model.Host {
-	hosts := make([]*model.Host, len(m.fleet.Hosts))
-	copy(hosts, m.fleet.Hosts)
+	var machines []*model.Host
+	guests := make(map[string][]*model.Host)
+	for _, h := range m.fleet.Hosts {
+		if h.IsGuest() {
+			guests[h.Parent] = append(guests[h.Parent], h)
+		} else {
+			machines = append(machines, h)
+		}
+	}
 
-	sort.SliceStable(hosts, func(i, j int) bool {
+	sort.SliceStable(machines, m.less(machines))
+
+	out := make([]*model.Host, 0, len(m.fleet.Hosts))
+	for _, h := range machines {
+		out = append(out, h)
+		kids := guests[h.Name]
+		sort.SliceStable(kids, func(i, j int) bool { return kids[i].Name < kids[j].Name })
+		out = append(out, kids...)
+	}
+	return out
+}
+
+// less builds the comparator for the chosen sort column.
+func (m Model) less(hosts []*model.Host) func(i, j int) bool {
+	return func(i, j int) bool {
 		a, b := hosts[i], hosts[j]
 		var less bool
 		switch m.sort {
@@ -489,8 +571,7 @@ func (m Model) sortedHosts() []*model.Host {
 			return !less
 		}
 		return less
-	})
-	return hosts
+	}
 }
 
 func diskPct(h *model.Host) float64 {

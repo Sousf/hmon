@@ -80,6 +80,31 @@ A watched container that is absent entirely is reported as `missing`.
 Thresholds (`cpu`, `mem`, `disk`, `temp`) set warn/crit colours only — there is
 no alerting.
 
+### Guests
+
+LXD instances are discovered automatically and get a row of their own, nested
+under the machine running them:
+
+```
+  hermes3         ●     1d 2h    5% ▂▁▂▂   4.2G/15.4G   51%   44°C   ↓210K ↑ 88K
+  ├─ buildbox ct  ○ stopped         —      —             —      —    —
+  └─ nixos vm     ●       47m    1% ▁▁▁▁   396M/4.0G    19%    n/a   ↓  1K ↑  2K
+```
+
+Nothing to configure — they are found, not listed. Set `guests: false` to hide
+them.
+
+A guest is measured **from the inside**: the same collector is piped onward
+into each instance over `lxc exec`, so CPU, memory, load, disk, and network
+come from the guest's own `/proc` rather than from what the daemon can see
+outside it. A guest with no `lxd-agent`, or one that is stopped, falls back to
+LXD's own accounting and shows dashes where it has nothing to report.
+
+A stopped instance reads `stopped`, not `down`, and counts as healthy — you
+turned it off on purpose. Guests are read-only: `x`, `X`, `R`, and `space`
+apply to machines only, since all of them go over SSH to an address a guest
+does not have.
+
 ## Keys
 
 | Key               | Action                                               |
@@ -172,8 +197,8 @@ column can express, against the host name:
 
 | Flag | Meaning                                                                  |
 | ---- | ------------------------------------------------------------------------ |
-| `✗`  | One or more systemd units in the failed state (named in the detail pane) |
-| `⟳`  | Reboot required (`/var/run/reboot-required`)                             |
+| `✗`  | A watched service or container is down, or a systemd unit has failed    |
+| `!`  | Reboot required (`/var/run/reboot-required`)                            |
 
 ## Scripting
 

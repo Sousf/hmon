@@ -61,6 +61,14 @@ type Opts struct {
 	// Services are unit names to check. One systemctl call covers the whole
 	// list, so this is cheap enough to run for every host on every poll.
 	Services []string
+	// Guests discovers LXD instances and measures each from the inside. Like
+	// containers this is a fleet-wide signal rather than a detail-only one:
+	// guests occupy rows of their own, so every host needs them every poll.
+	Guests bool
+	// GuestProcs names the one instance whose top processes are also wanted,
+	// which is the guest currently being viewed in detail. Empty otherwise, for
+	// the same reason hosts only collect processes for the selected row.
+	GuestProcs string
 }
 
 func (o Opts) args() []string {
@@ -71,10 +79,52 @@ func (o Opts) args() []string {
 	if o.Detail || o.Containers {
 		args = append(args, "containers")
 	}
+	if o.Guests {
+		args = append(args, "guests")
+		if o.GuestProcs != "" {
+			args = append(args, "gprocs="+o.GuestProcs)
+		}
+	}
 	if len(o.Services) > 0 {
 		args = append(args, "svc="+strings.Join(o.Services, ","))
 	}
 	return args
+}
+
+// guestsArg is the flag whose presence means the collector may need to probe
+// inside an LXD instance, and so needs a copy of itself to pipe onward.
+const guestsArg = "guests"
+
+// remoteInput is what gets piped to the remote shell.
+//
+// When guests are wanted the collector is preceded by a copy of itself, quoted
+// into a variable. That is what lets an LXD instance be measured by the very
+// same code as the machine hosting it, rather than by a second, lesser probe
+// that would have to duplicate the awkward parts — the two-sample process
+// accounting, the /proc/net/dev column handling — and drift out of step with
+// them. The remote shell never sees the copy as code, only as a string it
+// passes on, so there is no recursion: the inner run is invoked with "guest",
+// never "guests".
+func remoteInput(args []string) string {
+	wantGuests := false
+	for _, a := range args {
+		if a == guestsArg {
+			wantGuests = true
+			break
+		}
+	}
+	if !wantGuests {
+		return collectorScript
+	}
+	return "HMON_GUEST_PROBE=" + shellQuote(collectorScript) + "\n" + collectorScript
+}
+
+// shellQuote wraps s so a POSIX shell reproduces it byte for byte. Single
+// quotes suppress every form of expansion, so the only character needing
+// special handling is the single quote itself, which is closed, escaped, and
+// reopened.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Poll runs one collection against a host.
@@ -230,7 +280,7 @@ func (r *SSHRunner) sshBase(addr string) []string {
 // Run pipes the collector script to the host's shell and returns its stdout.
 func (r *SSHRunner) Run(ctx context.Context, addr string, args []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "ssh", r.sshArgs(addr, args)...)
-	cmd.Stdin = strings.NewReader(collectorScript)
+	cmd.Stdin = strings.NewReader(remoteInput(args))
 
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

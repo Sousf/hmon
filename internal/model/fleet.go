@@ -32,14 +32,36 @@ type DiskRate struct {
 	Write float64
 }
 
+// HostKind distinguishes a configured machine from an LXD instance discovered
+// running on one.
+type HostKind int
+
+const (
+	KindMachine HostKind = iota
+	KindVM
+	KindContainer
+)
+
 // Host is everything known about one machine: its latest sample, the derived
 // values that need two samples to compute, and its trend history.
+//
+// An LXD guest is a Host too, distinguished only by having a Parent. That is
+// the whole reason the tree costs so little: CPU percentage from jiffy diffs,
+// network and disk rates, the counter-reset guards protecting all three, and
+// the trend rings behind the sparklines are written once here and work on a
+// guest unchanged.
 type Host struct {
-	Name        string // display name
-	Addr        string // what ssh connects to
+	// Name is the unique key. A guest's is "<parent>/<instance>", because two
+	// hosts may each run an instance called "nixos" and the fleet is a flat map.
+	Name        string
+	Addr        string // what ssh connects to; empty for a guest
 	Filesystems []string
 	Services    []string
 	Containers  []string
+
+	// Parent is the machine this guest runs on, empty for a configured host.
+	Parent string
+	Kind   HostKind
 
 	Status   Status
 	LastSeen time.Time
@@ -61,7 +83,31 @@ type Host struct {
 
 	CPUHist Ring
 	MemHist Ring
+
+	// LXD's cumulative CPU-seconds counter, kept only for a guest we could not
+	// get inside so the next poll can turn it into a percentage. A guest that
+	// answered its own probe reports real jiffies and never touches these.
+	guestCPUSecs float64
+	guestCores   int
+	hasGuestCPU  bool
 }
+
+// IsGuest reports whether this row is an LXD instance rather than a configured
+// machine.
+func (h *Host) IsGuest() bool { return h.Parent != "" }
+
+// Display is the name to show. A guest is only ever drawn underneath its host,
+// so its instance name alone is unambiguous there and the qualified key would
+// just be noise.
+func (h *Host) Display() string {
+	if h.Parent == "" {
+		return h.Name
+	}
+	return h.Name[len(h.Parent)+1:]
+}
+
+// GuestKey is the fleet-wide unique name for an instance running on a host.
+func GuestKey(parent, instance string) string { return parent + "/" + instance }
 
 // TotalNet sums throughput across every interface, for the table's single
 // network column.
@@ -140,6 +186,20 @@ func (f *Fleet) Apply(name string, s Sample) {
 		s.Containers = h.Cur.Containers
 	}
 
+	derive(h, s)
+
+	// Guests are reconciled only when the poll actually reported them. A poll
+	// that skipped the section is indistinguishable from one where every
+	// instance was destroyed, and acting on that would empty the tree.
+	if s.HasGuestInfo {
+		f.syncGuests(h, s.Guests)
+	}
+}
+
+// derive records a sample against a host and computes everything that needs
+// two points in time. Guests reach it through the same path machines do, which
+// is what keeps the counter-reset guards honest for both.
+func derive(h *Host, s Sample) {
 	if h.hasPrev {
 		elapsed := s.At.Sub(h.prev.At).Seconds()
 		h.CPUPct, h.HasCPUPct = cpuPercent(h.prev, s)
@@ -163,6 +223,143 @@ func (f *Fleet) Apply(name string, s Sample) {
 	if s.HasMem {
 		h.MemHist.Push(s.MemPct())
 	}
+}
+
+// syncGuests reconciles the instances discovered on a host against the fleet:
+// rows appear for new ones and disappear for those that are gone.
+func (f *Fleet) syncGuests(parent *Host, guests []Guest) {
+	seen := make(map[string]bool, len(guests))
+
+	for _, g := range guests {
+		if g.Name == "" {
+			continue
+		}
+		key := GuestKey(parent.Name, g.Name)
+		seen[key] = true
+
+		h, ok := f.index[key]
+		if !ok {
+			h = &Host{Name: key, Parent: parent.Name, Status: StatusUnknown}
+			f.index[key] = h
+			f.insertGuest(parent, h)
+		}
+		if g.Kind == GuestContainer {
+			h.Kind = KindContainer
+		} else {
+			h.Kind = KindVM
+		}
+		applyGuest(h, g, parent.Cur.At, parent.Cur.Cores)
+	}
+
+	f.dropGuests(parent.Name, seen)
+}
+
+// insertGuest places a new guest immediately after its host and any siblings it
+// already has, so Hosts reads as a tree without needing to be re-sorted.
+func (f *Fleet) insertGuest(parent, g *Host) {
+	at := len(f.Hosts)
+	for i, h := range f.Hosts {
+		if h != parent {
+			continue
+		}
+		at = i + 1
+		for at < len(f.Hosts) && f.Hosts[at].Parent == parent.Name {
+			at++
+		}
+		break
+	}
+	f.Hosts = append(f.Hosts, nil)
+	copy(f.Hosts[at+1:], f.Hosts[at:])
+	f.Hosts[at] = g
+}
+
+// dropGuests removes instances of a host that were not in the latest listing.
+func (f *Fleet) dropGuests(parent string, keep map[string]bool) {
+	out := f.Hosts[:0]
+	for _, h := range f.Hosts {
+		if h.Parent == parent && !keep[h.Name] {
+			delete(f.index, h.Name)
+			continue
+		}
+		out = append(out, h)
+	}
+	f.Hosts = out
+}
+
+// applyGuest records what was learned about one instance.
+//
+// There are three cases, and they are genuinely different: an instance we got
+// inside reports real counters and is treated exactly like a machine; one that
+// is running but unreachable has only LXD's accounting to offer; and a stopped
+// one has nothing at all.
+func applyGuest(h *Host, g Guest, at time.Time, parentCores int) {
+	h.LastErr = ""
+	h.LastSeen = at
+
+	switch {
+	case !g.Running():
+		// Not an outage — the instance is doing what it was told. Its last
+		// readings are cleared rather than left on screen, where they would
+		// imply a machine still running.
+		h.Status = StatusStopped
+		h.Cur = Sample{At: at}
+		h.HasCPUPct, h.HasNet, h.HasDisk = false, false, false
+		h.hasPrev, h.hasGuestCPU = false, false
+
+	case g.Probed:
+		h.Status = StatusUp
+		h.hasGuestCPU = false
+		derive(h, g.Sample)
+
+	default:
+		// Running, but we could not get inside: a VM with no lxd-agent, or a
+		// probe that timed out. LXD's own numbers are all there is.
+		h.Status = StatusUp
+		h.NetRates, h.HasNet = nil, false
+		h.DiskRates, h.HasDisk = nil, false
+
+		s := Sample{At: at}
+		if g.MemUsed > 0 && g.MemPct > 0 {
+			// LXD reports usage and its percentage but not the total, so the
+			// total is recovered from the two. Without it the memory cell could
+			// not be drawn in the "used of total" form every other row uses.
+			total := uint64(float64(g.MemUsed) / (g.MemPct / 100))
+			s.MemTotal, s.MemAvail, s.HasMem = total, total-g.MemUsed, true
+		}
+
+		cores := g.Cores
+		if cores <= 0 {
+			// No CPU limit set, so the instance is free to use every core its
+			// host has — which makes the host's count the right divisor.
+			cores = parentCores
+		}
+		h.CPUPct, h.HasCPUPct = guestCPUPercent(h, g.CPUSecs, cores, at)
+		h.guestCPUSecs, h.guestCores, h.hasGuestCPU = g.CPUSecs, cores, true
+
+		h.Cur, h.prev, h.hasPrev = s, s, false
+		if h.HasCPUPct {
+			h.CPUHist.Push(h.CPUPct)
+		}
+		if s.HasMem {
+			h.MemHist.Push(s.MemPct())
+		}
+	}
+}
+
+// guestCPUPercent turns LXD's cumulative CPU-seconds counter into a percentage
+// by diffing against the previous poll. It carries the same reset guard the
+// jiffy path does: the counter restarts when the instance does, and diffing
+// across that boundary would produce a negative rate.
+func guestCPUPercent(h *Host, cpuSecs float64, cores int, at time.Time) (float64, bool) {
+	if !h.hasGuestCPU || cores <= 0 || h.guestCores != cores {
+		return 0, false
+	}
+	elapsed := at.Sub(h.Cur.At).Seconds()
+	delta := cpuSecs - h.guestCPUSecs
+	if elapsed <= 0 || delta < 0 {
+		return 0, false
+	}
+	return clampPct(delta / elapsed / float64(cores) * 100), true
 }
 
 // Fail records an unsuccessful poll. Last known values and trend history are
@@ -197,6 +394,19 @@ func (f *Fleet) Fail(name string, kind FailKind, msg string) {
 	h.HasNet = false
 	h.HasDisk = false
 	h.hasPrev = false
+
+	// Guests are only ever visible through their host, so a host we cannot
+	// reach takes its instances with it. Leaving them reading "up" would be a
+	// plain lie: we have no idea what they are doing.
+	for _, g := range f.Hosts {
+		if g.Parent != name {
+			continue
+		}
+		g.LastErr = msg
+		g.Status = h.Status
+		g.HasCPUPct, g.HasNet, g.HasDisk = false, false, false
+		g.hasPrev, g.hasGuestCPU = false, false
+	}
 }
 
 // cpuPercent derives busy-time percentage from two jiffy snapshots.

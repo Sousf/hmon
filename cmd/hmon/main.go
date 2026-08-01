@@ -67,6 +67,12 @@ services: []
 # is reported as missing. Empty means show every container.
 containers: []
 
+# LXD instances get a row of their own, nested under the machine running them,
+# and are measured from the inside — so a VM shows real CPU, memory, and disk
+# rather than whatever the daemon can see from outside. Nothing to configure:
+# they are discovered, not listed. Set false to hide them.
+guests: true
+
 # Thresholds only choose the colour a value is drawn in.
 thresholds:
   cpu:  {warn: 75, crit: 90}
@@ -139,7 +145,7 @@ func run() error {
 	defer closeAll(runner, fleet)
 
 	if *once {
-		return runOnce(fleet, poller, *jsonOut)
+		return runOnce(fleet, poller, cfg.GuestsEnabled(), *jsonOut)
 	}
 
 	p := tea.NewProgram(
@@ -161,16 +167,27 @@ func closeAll(runner *collect.SSHRunner, fleet *model.Fleet) {
 // It polls twice, a second apart, because CPU percentage and the network and
 // disk rates are all derived by diffing two samples — a single poll would
 // report the host but omit exactly the numbers most worth alerting on.
-func runOnce(fleet *model.Fleet, poller *collect.Poller, asJSON bool) error {
+func runOnce(fleet *model.Fleet, poller *collect.Poller, guests, asJSON bool) error {
 	poll := func(detail bool) {
+		// Guests are discovered by the first poll and appear in the fleet
+		// partway through this run, so the fan-out is taken over machines only.
+		// They have no address to connect to in any case: their readings arrive
+		// on their host's poll.
+		var machines []*model.Host
+		for _, h := range fleet.Hosts {
+			if !h.IsGuest() {
+				machines = append(machines, h)
+			}
+		}
+
 		var wg sync.WaitGroup
 		results := make([]struct {
 			name string
 			s    model.Sample
 			err  error
-		}, len(fleet.Hosts))
+		}, len(machines))
 
-		for i, h := range fleet.Hosts {
+		for i, h := range machines {
 			wg.Add(1)
 			go func(i int, h *model.Host) {
 				defer wg.Done()
@@ -181,6 +198,7 @@ func runOnce(fleet *model.Fleet, poller *collect.Poller, asJSON bool) error {
 						Detail:     detail,
 						Services:   h.Services,
 						Containers: len(h.Containers) > 0,
+						Guests:     guests,
 					})
 			}(i, h)
 		}

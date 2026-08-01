@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"github.com/Sousf/hmon/internal/model"
 )
@@ -33,10 +34,11 @@ func (m Model) renderTableOnly() string { return m.renderTableWith(false) }
 
 func (m Model) renderTableWith(withPane bool) string {
 	hosts := m.sortedHosts()
+	prefixes := treePrefixes(hosts)
 
 	nameW := 4
-	for _, h := range hosts {
-		if n := len([]rune(h.Name)); n > nameW {
+	for i, h := range hosts {
+		if n := runewidth.StringWidth(prefixes[i] + h.Display() + kindTag(h)); n > nameW {
 			nameW = n
 		}
 	}
@@ -44,15 +46,23 @@ func (m Model) renderTableWith(withPane bool) string {
 	var b strings.Builder
 
 	// Title bar.
-	up := 0
+	//
+	// A stopped guest counts towards neither figure. It is not down, it is off
+	// because someone turned it off, and folding it into the ratio would make
+	// the fleet read as degraded every time a VM is deliberately parked.
+	up, total := 0, 0
 	for _, h := range hosts {
+		if h.Status == model.StatusStopped {
+			continue
+		}
+		total++
 		if h.Status == model.StatusUp {
 			up++
 		}
 	}
 	title := styleTitle.Render("hmon")
 	summary := styleDim.Render(fmt.Sprintf("%d/%d up · %s",
-		up, len(hosts), m.now.Format("15:04:05")))
+		up, total, m.now.Format("15:04:05")))
 	b.WriteString(title + "  " + summary + "\n\n")
 
 	// Header row. The leading pad matches the width of the selection cursor
@@ -71,8 +81,8 @@ func (m Model) renderTableWith(withPane bool) string {
 			padRight("NET ↓ ↑", colNetW)))
 	b.WriteString("\n")
 
-	for _, h := range hosts {
-		b.WriteString(m.renderRow(h, nameW))
+	for i, h := range hosts {
+		b.WriteString(m.renderRow(h, prefixes[i], nameW))
 		b.WriteString("\n")
 	}
 
@@ -133,7 +143,49 @@ func arrow(desc bool) string {
 	return "↑"
 }
 
-func (m Model) renderRow(h *model.Host, nameW int) string {
+// treePrefixes returns the branch drawing for each row, given rows already in
+// display order — every guest immediately after its host. The last guest of a
+// host gets the corner so the branch visibly ends there.
+func treePrefixes(hosts []*model.Host) []string {
+	out := make([]string, len(hosts))
+	for i, h := range hosts {
+		if !h.IsGuest() {
+			continue
+		}
+		last := i+1 >= len(hosts) || hosts[i+1].Parent != h.Parent
+		if last {
+			out[i] = "└─ "
+		} else {
+			out[i] = "├─ "
+		}
+	}
+	return out
+}
+
+// kindTag labels a guest as a virtual machine or a system container. Machines
+// get nothing: the unlabelled rows are the ones you configured, and saying so
+// on every one of them would be noise.
+func kindTag(h *model.Host) string {
+	switch h.Kind {
+	case model.KindVM:
+		return " vm"
+	case model.KindContainer:
+		return " ct"
+	default:
+		return ""
+	}
+}
+
+// kindWord spells out what kindTag abbreviates, for the detail view where
+// there is room for the whole word.
+func kindWord(h *model.Host) string {
+	if h.Kind == model.KindContainer {
+		return "container"
+	}
+	return "virtual machine"
+}
+
+func (m Model) renderRow(h *model.Host, prefix string, nameW int) string {
 	selected := h.Name == m.selected
 
 	// Cursor and mark occupy separate cells: a host can be both the selection
@@ -150,11 +202,20 @@ func (m Model) renderRow(h *model.Host, nameW int) string {
 	}
 	cursor += mark
 
-	name := padRight(truncate(h.Name, nameW), nameW)
+	// The name cell is assembled from three differently coloured pieces, so it
+	// is padded by measured width rather than by padRight — which would have to
+	// measure the escape sequences too.
+	tag := kindTag(h)
+	label := truncate(h.Display(), nameW-runewidth.StringWidth(prefix+tag))
+	name := styleFaint.Render(prefix)
 	if selected {
-		name = styleSelected.Render(name)
+		name += styleSelected.Render(label)
 	} else {
-		name = styleText.Render(name)
+		name += styleText.Render(label)
+	}
+	name += styleDim.Render(tag)
+	if pad := nameW - runewidth.StringWidth(prefix+label+tag); pad > 0 {
+		name += strings.Repeat(" ", pad)
 	}
 	// A failed unit is invisible in every resource column, so flag it against
 	// the host name where it cannot be missed.
@@ -278,6 +339,11 @@ func statusParts(h *model.Host) (dot, label string, st lipgloss.Style) {
 		dot, label, st = "●", "", styleOK
 	case model.StatusStale:
 		dot, label, st = "◐", "stale", styleWarn
+	case model.StatusStopped:
+		// Only guests reach this, and it is not a fault: someone stopped it.
+		// Drawn in the same quiet grey as the dashes filling the rest of the
+		// row, so it reads as absence rather than as an alarm.
+		dot, label, st = "○", "stopped", styleDim
 	case model.StatusDown:
 		dot, label, st = "○", "down", styleDim
 	case model.StatusAuth:

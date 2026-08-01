@@ -261,3 +261,32 @@ func TestWatchListsDefaultToEmpty(t *testing.T) {
 		t.Error("watch lists are non-empty by default, want empty")
 	}
 }
+
+// Guests are on without being asked for, because they need no configuration:
+// instances are discovered, not listed. The key exists only to turn them off,
+// which means "absent" and "false" cannot be the same thing.
+func TestGuestsDefaultOnAndCanBeDisabled(t *testing.T) {
+	c, err := Parse([]byte("hosts: [a]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.GuestsEnabled() {
+		t.Error("guests off by default")
+	}
+
+	c, err = Parse([]byte("hosts: [a]\nguests: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.GuestsEnabled() {
+		t.Error("guests: false was ignored")
+	}
+
+	c, err = Parse([]byte("hosts: [a]\nguests: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.GuestsEnabled() {
+		t.Error("guests: true was ignored")
+	}
+}
