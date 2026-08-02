@@ -112,25 +112,48 @@ each kind once:
 
 ```yaml
 templates:
-  - name: nixos
-    image: images:nixos/25.05/cloud
-    type: vm # container unless you say vm
-    cpu: 4 # optional; omitted limits inherit the profile's
-    memory: 4GiB
-    provision: ./provision/nixos.sh # optional, relative to this config file
+  - name: alpine
+    image: images:alpine/3.22 # remote:alias — see below
+    type: container # container unless you say vm
+    cpu: 1 # optional; omitted limits inherit the profile's
+    memory: 512MiB
+    provision: ./provision/alpine.sh # optional, relative to this config file
 ```
 
 Then `n` → pick a template → name it → `y`. The confirmation shows the exact
 `lxc launch` command rather than a summary of it, so a wrong image is something
-you can catch. Names are checked against LXD's rules as you type.
+you can catch before it runs. Names are checked against LXD's rules as you type.
+`n` is only offered when templates are configured, and only on a machine row —
+a guest cannot host anything.
 
 Provisioning is a local script piped into the instance over `lxc exec` once it
-answers — the same mechanism the guest probe uses, so nothing is written to the
-host or the guest. Output streams into the results view with a `==>` line per
-stage, because a first launch downloads an image and an empty screen for four
-minutes is indistinguishable from a hang.
+answers, the same mechanism the guest probe uses, so nothing is written to the
+host or to the guest. The output carries a `==>` line per stage, which is what
+tells you afterwards whether a failure happened while downloading, while waiting
+for the boot, or inside your script.
 
-Two behaviours worth knowing:
+#### Choosing an image
+
+`images:alpine/3.22` is a **remote** and an **alias**. Remotes are the host's own
+(`lxc remote list`), and the LXD daemon there does the resolving and the
+downloading — hmon only sends the command. A bare alias with no `remote:` prefix
+means the host's local image store rather than the internet.
+
+The catch: **the same alias resolves to a different image for `vm` than for
+`container`** — a squashfs rootfs for one, a qcow2 disk for the other. If a
+remote publishes no VM variant, `type: vm` fails with "the requested image
+couldn't be found", which reads like a typo but isn't. Aliases also come and go
+between releases. Check before writing a template:
+
+```sh
+ssh host lxc image list images: | grep alpine   # what the remote publishes
+ssh host lxc image list                         # what is already local
+```
+
+For VMs, prefer a `/cloud` variant where one exists: those ship `lxd-agent`,
+without which nothing can get inside to provision it.
+
+#### Three behaviours worth knowing
 
 - **A failed provision leaves the instance running** and says so. Deleting a
   machine because a script exited non-zero is not a call to make for you — `S`
@@ -138,10 +161,16 @@ Two behaviours worth knowing:
 - **Missing storage is caught before anything is created.** LXD reports an
   uninitialised host only after it has begun work, naming an internal step
   rather than the thing you have to fix.
+- **A new instance needs no config change.** Guests are discovered, so it
+  appears in the tree on the next poll by itself.
 
-`launch_timeout` bounds the whole thing, defaulting to 10m. There is no delete:
-destroying a VM and its disk is irreversible, and `S` already puts you one
-keystroke from `lxc delete`.
+`launch_timeout` bounds the whole thing, defaulting to 10m — a first launch
+downloads an image, and later ones reuse the host's cache. There is no `disk:`
+key, because LXD's `dir` storage driver has no quota support and the setting
+would silently do nothing on the commonest homelab setup.
+
+There is no delete: destroying a VM and its disk is irreversible, and `S`
+already puts you one keystroke from `lxc delete`.
 
 ## Keys
 
@@ -276,11 +305,17 @@ No test touches the network. The collector can't run natively on macOS (no
 `/proc`); exercise it with:
 
 ```sh
-docker run --rm -i alpine:3.20 sh -s < internal/collect/collector.sh
-docker run --rm -i debian:bookworm-slim sh -s procs < internal/collect/collector.sh
+docker run --rm -i alpine:3 sh -s < internal/collect/collector.sh
+docker run --rm -i debian:stable-slim sh -s procs < internal/collect/collector.sh
 ```
 
 Both matter — busybox awk and mawk differ in ways that have caused real bugs.
+
+The same trick covers the paths that shell out to `lxc`, by putting a stub of
+it on `PATH` inside the container. That is how guest discovery and instance
+creation are tested without an LXD host: it can return a fixed instance list,
+fail the way an uninitialised host does, or refuse `lxc exec` the way a VM with
+no agent does.
 
 ## License
 
