@@ -28,6 +28,10 @@ const (
 	// but an ad-hoc command is something the operator is deliberately waiting
 	// on and may legitimately take much longer.
 	DefaultCommandTimeout = 60 * time.Second
+	// DefaultLaunchTimeout has its own budget rather than sharing the command
+	// one: a first launch downloads an image, which is hundreds of megabytes,
+	// and being killed partway through leaves a half-created instance behind.
+	DefaultLaunchTimeout = 10 * time.Minute
 )
 
 // Limits is a warn/critical pair. Thresholds drive nothing but the colour a
@@ -129,13 +133,75 @@ func (h *Host) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// Template is a kind of LXD instance you can launch, defined once and used
+// repeatedly. Naming the specification here rather than typing it into a form
+// each time is what keeps a built instance reproducible — and keeps the launch
+// UI down to a picker and one text field.
+type Template struct {
+	Name  string `yaml:"name"`
+	Image string `yaml:"image"` // e.g. images:nixos/25.05/cloud
+	// Type selects a virtual machine or a system container. Empty means
+	// container, matching what `lxc launch` does on its own.
+	Type string `yaml:"type"`
+	// CPU and Memory become limits.cpu and limits.memory. Both are optional and
+	// are simply left off the command when unset, so the instance inherits
+	// whatever the profile gives it.
+	//
+	// There is deliberately no disk size: LXD's `dir` storage driver does not
+	// support quotas, so the key would silently do nothing on the most common
+	// homelab setup. It belongs here only alongside a pool that can honour it.
+	CPU    int    `yaml:"cpu"`
+	Memory string `yaml:"memory"`
+	// Provision is a local script run inside the instance once it answers.
+	// Relative paths resolve against the directory holding this config file,
+	// since that is what names them.
+	Provision string `yaml:"provision"`
+}
+
+// UnmarshalYAML rejects unknown keys by hand, for the same reason Host does:
+// strict decoding does not reach inside a custom unmarshaler, and a mistyped
+// `memory` here would otherwise be silently ignored.
+func (t *Template) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			switch value.Content[i].Value {
+			case "name", "image", "type", "cpu", "memory", "provision":
+			default:
+				return fmt.Errorf("line %d: field %s not found in template entry",
+					value.Content[i].Line, value.Content[i].Value)
+			}
+		}
+	}
+	type plain Template
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	*t = Template(p)
+	return nil
+}
+
+// Instance type values, as `lxc launch` understands them.
+const (
+	TypeContainer = "container"
+	TypeVM        = "vm"
+)
+
+// IsVM reports whether this template launches a virtual machine.
+func (t Template) IsVM() bool { return t.Type == TypeVM }
+
 // Config is the whole file.
 type Config struct {
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
 	// CommandTimeout bounds a command run across the fleet with x.
 	CommandTimeout time.Duration `yaml:"command_timeout"`
-	Hosts          []Host        `yaml:"hosts"`
+	// LaunchTimeout bounds creating and provisioning an instance with n.
+	LaunchTimeout time.Duration `yaml:"launch_timeout"`
+	Hosts         []Host        `yaml:"hosts"`
+	// Templates are the kinds of LXD instance n can launch. Empty simply means
+	// n has nothing to offer and says so.
+	Templates []Template `yaml:"templates"`
 	// Watch lists applied to every host unless that host overrides them.
 	//
 	// Each is empty by default, and empty means "no filtering": report every
@@ -158,6 +224,12 @@ type Config struct {
 	Guests *bool `yaml:"guests"`
 
 	Thresholds Thresholds `yaml:"thresholds"`
+
+	// Path is where this config was read from, kept so relative paths inside it
+	// resolve against the file that names them rather than against whatever
+	// directory hmon happened to be started in. Not a setting: the yaml tag
+	// excludes it so `path:` in a config file is rejected like any other typo.
+	Path string `yaml:"-"`
 }
 
 // GuestsEnabled reports whether LXD instances should be discovered.
@@ -202,6 +274,27 @@ func (c *Config) HostRefs() []model.HostRef {
 	return refs
 }
 
+func (c *Config) validateTemplates() error {
+	seen := make(map[string]bool, len(c.Templates))
+	for i, t := range c.Templates {
+		switch {
+		case t.Name == "":
+			return fmt.Errorf("config: templates[%d] has no `name:`", i)
+		case t.Image == "":
+			return fmt.Errorf("config: template %q has no `image:` — for example images:nixos/25.05/cloud", t.Name)
+		case t.Type != TypeContainer && t.Type != TypeVM:
+			return fmt.Errorf("config: template %q has type %q, want %q or %q",
+				t.Name, t.Type, TypeContainer, TypeVM)
+		case t.CPU < 0:
+			return fmt.Errorf("config: template %q has a negative cpu count", t.Name)
+		case seen[t.Name]:
+			return fmt.Errorf("config: duplicate template name %q", t.Name)
+		}
+		seen[t.Name] = true
+	}
+	return nil
+}
+
 // DefaultPath is where the config lives absent a -c flag.
 //
 // This deliberately does not use os.UserConfigDir: on macOS that resolves to
@@ -232,7 +325,25 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Parse(data)
+	c, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	c.Path = path
+	return c, nil
+}
+
+// ProvisionFor returns the absolute path of a template's provision script,
+// resolved against the directory holding the config file. Empty when the
+// template has no script.
+//
+// Relative to the config rather than to the working directory: the config is
+// what names the script, and hmon is as often started from somewhere else.
+func (c *Config) ProvisionFor(t Template) string {
+	if t.Provision == "" || filepath.IsAbs(t.Provision) || c.Path == "" {
+		return t.Provision
+	}
+	return filepath.Join(filepath.Dir(c.Path), t.Provision)
 }
 
 // Parse decodes and validates config bytes. Split out from Load so tests never
@@ -268,6 +379,14 @@ func (c *Config) applyDefaults() {
 	if c.CommandTimeout == 0 {
 		c.CommandTimeout = DefaultCommandTimeout
 	}
+	if c.LaunchTimeout == 0 {
+		c.LaunchTimeout = DefaultLaunchTimeout
+	}
+	for i := range c.Templates {
+		if c.Templates[i].Type == "" {
+			c.Templates[i].Type = TypeContainer
+		}
+	}
 	if c.Thresholds.CPU == (Limits{}) {
 		c.Thresholds.CPU = Limits{Warn: 75, Crit: 90}
 	}
@@ -298,6 +417,12 @@ func (c *Config) validate() error {
 	}
 	if c.CommandTimeout <= 0 {
 		return fmt.Errorf("config: command_timeout must be positive, got %s", c.CommandTimeout)
+	}
+	if c.LaunchTimeout <= 0 {
+		return fmt.Errorf("config: launch_timeout must be positive, got %s", c.LaunchTimeout)
+	}
+	if err := c.validateTemplates(); err != nil {
+		return err
 	}
 	// Timeout is deliberately allowed to exceed interval. Overlapping polls are
 	// already prevented by skipping hosts with a collection in flight, and

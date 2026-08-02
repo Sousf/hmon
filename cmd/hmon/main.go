@@ -73,6 +73,26 @@ containers: []
 # they are discovered, not listed. Set false to hide them.
 guests: true
 
+# Kinds of LXD instance n can create. Defining them here rather than typing
+# them into a form each time is what makes a built instance reproducible.
+# Omit the whole section and n simply does nothing.
+#
+# type is container unless you say vm. cpu and memory are optional and are left
+# off the command entirely when unset, so the instance inherits its profile's.
+# provision is a local script piped into the instance once it answers; relative
+# paths resolve against this file.
+templates: []
+#  - name: nixos
+#    image: images:nixos/25.05/cloud
+#    type: vm
+#    cpu: 4
+#    memory: 4GiB
+#    provision: ./provision/nixos.sh
+
+# Deadline for creating an instance with n. Much longer than command_timeout
+# because a first launch downloads an image.
+launch_timeout: 10m
+
 # Thresholds only choose the colour a value is drawn in.
 thresholds:
   cpu:  {warn: 75, crit: 90}
@@ -139,6 +159,9 @@ func run() error {
 	// Ad-hoc commands get their own runner with a longer deadline: polls are
 	// tuned to fail fast, but a command is something the operator is waiting on.
 	executor := collect.NewExecRunner(cfg.CommandTimeout)
+	// Creating an instance gets its own, much longer deadline: a first launch
+	// downloads an image, which no ad-hoc command budget should have to cover.
+	launcher := collect.NewExecRunner(cfg.LaunchTimeout)
 
 	// Tear down multiplexed SSH masters on exit so quitting does not leave
 	// background ssh processes behind.
@@ -149,7 +172,7 @@ func run() error {
 	}
 
 	p := tea.NewProgram(
-		ui.New(cfg, fleet, poller, executor),
+		ui.New(cfg, fleet, poller, executor, launcher),
 		tea.WithAltScreen(),
 	)
 	_, err = p.Run()

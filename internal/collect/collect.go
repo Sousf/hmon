@@ -187,6 +187,10 @@ type SSHRunner struct {
 // every poll would fail.
 const maxControlPath = 100
 
+// maxConnectSecs bounds how long ssh waits to establish a connection,
+// regardless of how long the command it carries is allowed to take.
+const maxConnectSecs = 30
+
 // NewSSHRunner builds a runner with connection multiplexing enabled.
 func NewSSHRunner(timeout time.Duration) *SSHRunner {
 	return &SSHRunner{timeout: timeout, controlDir: controlDir()}
@@ -253,6 +257,13 @@ func (r *SSHRunner) sshBase(addr string) []string {
 	connectSecs := int(r.timeout.Seconds())
 	if connectSecs < 1 {
 		connectSecs = 1
+	}
+	// Capped independently of the command budget. A launch is allowed ten
+	// minutes because it may be downloading an image, but that is time granted
+	// to work already under way — spending it waiting for a dead host to
+	// complete a handshake would just hide the failure for ten minutes.
+	if connectSecs > maxConnectSecs {
+		connectSecs = maxConnectSecs
 	}
 
 	out := []string{

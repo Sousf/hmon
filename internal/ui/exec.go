@@ -302,10 +302,29 @@ func (m Model) resultBlock(r execResult) []string {
 		}
 	} else {
 		for _, ln := range strings.Split(body, "\n") {
-			lines = append(lines, "    "+styleText.Render(truncate(ln, maxInt(20, m.width-6))))
+			lines = append(lines, "    "+styleText.Render(
+				truncate(collapseProgress(ln), maxInt(20, m.width-6))))
 		}
 	}
 	return append(lines, "")
+}
+
+// collapseProgress keeps only what a progress bar finally settled on.
+//
+// Tools that redraw a percentage in place — `lxc launch` pulling an image, apt,
+// docker pull, curl — separate each redraw with a carriage return rather than a
+// newline. On a live terminal each overwrites the last; captured and replayed
+// as text, all hundred of them survive on one enormous line.
+//
+// This view never streams, so the intermediate frames could not have been
+// useful anyway: by the time it is drawn, the command has finished. Keeping the
+// last frame preserves the outcome — "100%", or whatever it stalled at — and
+// discards the animation leading to it.
+func collapseProgress(line string) string {
+	if i := strings.LastIndexByte(line, '\r'); i >= 0 {
+		return line[i+1:]
+	}
+	return line
 }
 
 func plural(n int) string {

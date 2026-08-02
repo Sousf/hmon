@@ -105,6 +105,44 @@ turned it off on purpose. Guests are read-only: `x`, `X`, `R`, and `space`
 apply to machines only, since all of them go over SSH to an address a guest
 does not have.
 
+### Creating instances
+
+`n` creates a new LXD instance on the selected machine from a template. Define
+each kind once:
+
+```yaml
+templates:
+  - name: nixos
+    image: images:nixos/25.05/cloud
+    type: vm # container unless you say vm
+    cpu: 4 # optional; omitted limits inherit the profile's
+    memory: 4GiB
+    provision: ./provision/nixos.sh # optional, relative to this config file
+```
+
+Then `n` → pick a template → name it → `y`. The confirmation shows the exact
+`lxc launch` command rather than a summary of it, so a wrong image is something
+you can catch. Names are checked against LXD's rules as you type.
+
+Provisioning is a local script piped into the instance over `lxc exec` once it
+answers — the same mechanism the guest probe uses, so nothing is written to the
+host or the guest. Output streams into the results view with a `==>` line per
+stage, because a first launch downloads an image and an empty screen for four
+minutes is indistinguishable from a hang.
+
+Two behaviours worth knowing:
+
+- **A failed provision leaves the instance running** and says so. Deleting a
+  machine because a script exited non-zero is not a call to make for you — `S`
+  in and look at it.
+- **Missing storage is caught before anything is created.** LXD reports an
+  uninitialised host only after it has begun work, naming an internal step
+  rather than the thing you have to fix.
+
+`launch_timeout` bounds the whole thing, defaulting to 10m. There is no delete:
+destroying a VM and its disk is irreversible, and `S` already puts you one
+keystroke from `lxc delete`.
+
 ## Keys
 
 | Key               | Action                                               |
@@ -115,6 +153,7 @@ does not have.
 | `c` / `m`         | Sort processes by CPU / memory                       |
 | `S`               | Open an interactive ssh session on the selected host |
 | `R`               | Reboot the selected host (asks first)                |
+| `n`               | Create an LXD instance from a template (asks first)  |
 | `r` / `q`         | Refresh / quit                                       |
 
 The layout is responsive. On a tall terminal the space below the table shows

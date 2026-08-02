@@ -27,6 +27,7 @@ const (
 	viewPrompt   // typing a command to run across hosts
 	viewPassword // entering the sudo password for a root command
 	viewResults  // showing what that command produced
+	viewLaunch   // creating a new LXD instance from a template
 )
 
 // sortKey is the column the table is ordered by.
@@ -96,6 +97,10 @@ type Model struct {
 	fleet    *model.Fleet
 	poller   Poller
 	executor Executor
+	// launcher is separate from executor only for its deadline: creating an
+	// instance may download an image and legitimately take minutes, while an
+	// ad-hoc command that has not finished in a minute has usually hung.
+	launcher Executor
 
 	view     view
 	selected string // tracked by host name, not index, so the cursor stays on
@@ -126,6 +131,10 @@ type Model struct {
 	resultScroll int
 	running      bool
 
+	// launch holds the in-progress new-instance flow, reset each time n opens
+	// it so an abandoned name cannot leak into the next launch.
+	launch launchState
+
 	width, height int
 	now           time.Time
 
@@ -138,12 +147,13 @@ type Model struct {
 }
 
 // New builds the UI model.
-func New(cfg *config.Config, fleet *model.Fleet, poller Poller, executor Executor) Model {
+func New(cfg *config.Config, fleet *model.Fleet, poller Poller, executor, launcher Executor) Model {
 	m := Model{
 		cfg:      cfg,
 		fleet:    fleet,
 		poller:   poller,
 		executor: executor,
+		launcher: launcher,
 		sort:     sortName,
 		inFlight: make(map[string]bool),
 		marked:   make(map[string]bool),
@@ -275,6 +285,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.view == viewResults {
 		return m.handleResultsKey(msg)
 	}
+	if m.view == viewLaunch {
+		return m.handleLaunchKey(msg)
+	}
 
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -396,6 +409,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// it in behind the same key would make R mean two things.
 		if _, ok := m.selectedMachine(); ok {
 			m.confirmReboot = m.selected
+		}
+		return m, nil
+
+	case "n":
+		// Nothing to offer without templates, and a picker with no entries is
+		// worse than no picker at all. Guests are refused for the same reason
+		// they refuse every other action: this runs over ssh to an address they
+		// do not have.
+		if h, ok := m.selectedMachine(); ok && len(m.cfg.Templates) > 0 {
+			m.view = viewLaunch
+			m.launch = launchState{host: h.Name}
 		}
 		return m, nil
 
@@ -606,6 +630,8 @@ func (m Model) View() string {
 		return m.renderConfirm()
 	}
 	switch m.view {
+	case viewLaunch:
+		return m.renderLaunch()
 	case viewDetail:
 		return m.renderDetail()
 	case viewPrompt:

@@ -109,17 +109,25 @@ func (m Model) renderTableWith(withPane bool) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(renderHelp(
-		helpItem{"↑↓", "move"},
-		helpItem{"enter", "detail"},
-		helpItem{"space", "mark"},
-		helpItem{"x", "run"},
-		helpItem{"X", "run as root"},
-		helpItem{"S", "ssh"},
-		helpItem{"R", "reboot"},
+	items := []helpItem{
+		{"↑↓", "move"},
+		{"enter", "detail"},
+		{"space", "mark"},
+		{"x", "run"},
+		{"X", "run as root"},
+		{"S", "ssh"},
+		{"R", "reboot"},
+	}
+	// Only offered when there is something to offer. A binding advertised on
+	// every install but working on none would be worse than no binding.
+	if len(m.cfg.Templates) > 0 {
+		items = append(items, helpItem{"n", "new"})
+	}
+	items = append(items,
 		helpItem{"s", fmt.Sprintf("sort (%s%s)", m.sort, arrow(m.sortDesc))},
 		helpItem{"q", "quit"},
-	))
+	)
+	b.WriteString(renderHelp(items...))
 	return b.String()
 }
 

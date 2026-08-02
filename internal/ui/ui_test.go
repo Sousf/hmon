@@ -96,7 +96,7 @@ func testModel(t *testing.T, names ...string) (Model, *model.Fleet) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg, fleet, &fakePoller{}, &fakeExecutor{}), fleet
+	return New(cfg, fleet, &fakePoller{}, &fakeExecutor{}, &fakeExecutor{}), fleet
 }
 
 func key(s string) tea.KeyMsg {
@@ -987,7 +987,7 @@ func TestWatchedContainersPolledForEveryHost(t *testing.T) {
 	}
 
 	fake := &containerAwarePoller{}
-	m := New(cfg, fleet, fake, &fakeExecutor{})
+	m := New(cfg, fleet, fake, &fakeExecutor{}, &fakeExecutor{})
 	m.selected = "alpha"
 
 	drain(m.pollAll())
